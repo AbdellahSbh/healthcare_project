@@ -1,153 +1,156 @@
 #include "crow.h"
 #include <vector>
 #include <string>
+#include <regex>
+#include <mutex>
+#include <sstream>
+#include <iomanip>
 
 struct Patient {
-    int id;
+    std::string idNumber; 
     std::string name;
     std::string address;
     std::string medicalHistory;
-};
+};  
 
 struct Appointment {
-    int patientId; 
+    std::string idNumber; 
     std::string date;
     std::string time;
 };
 
 std::vector<Patient> patients;
 std::vector<Appointment> appointments;
+std::mutex dataMutex; 
+
+bool isValidIdNumber(const std::string& idNumber) {
+    std::regex idNumberRegex(R"(\d{17}[\dX])");
+    return std::regex_match(idNumber, idNumberRegex);
+}
+
+bool isIdNumberDuplicate(const std::string& idNumber) {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    for (const auto& patient : patients) {
+        if (patient.idNumber == idNumber) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isValidAppointmentTime(const std::string& time) {
+    std::regex timeRegex(R"(^([0-1][0-9]|2[0-3]):([0-5][0-9])$)"); 
+    if (!std::regex_match(time, timeRegex)) {
+        return false; 
+    }
+
+    int hour, minute;
+    char colon;
+    std::istringstream(time) >> hour >> colon >> minute;
+
+    if (hour < 9 || hour > 17 || (hour == 17 && minute > 0)) {
+        return false;
+    }
+    if (minute % 10 != 0) {
+        return false;
+    }
+
+    return true;
+}
+bool isAppointmentSlotTaken(const std::string& date, const std::string& time) {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    for (const auto& appointment : appointments) {
+        if (appointment.date == date && appointment.time == time) {
+            return true;
+        }
+    }
+    return false;
+}
 
 int main() {
     crow::SimpleApp app;
-
-
     CROW_ROUTE(app, "/")([]() {
-        return "Welcome to the Healthcare System API";
+        return "Welcome to the Digital Healthcare System API!";
     });
 
-
-CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::POST, crow::HTTPMethod::GET)([](const crow::request& req) {
-    if (req.method == crow::HTTPMethod::GET) {
-
+    CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
         auto qs = req.url_params;
         const char* name = qs.get("name");
         const char* address = qs.get("address");
         const char* medicalHistory = qs.get("medicalHistory");
+        const char* idNumber = qs.get("idNumber");
 
-        if (!name || !address || !medicalHistory) {
-            return crow::response(400, "Missing required parameters: name, address, or medicalHistory");
+        if (!name || !address || !medicalHistory || !idNumber) {
+            return crow::response(400, "Missing required parameters: name, address, medicalHistory, idNumber.");
+        }
+
+        std::string idNumberStr = idNumber;
+        if (!isValidIdNumber(idNumberStr)) {
+            return crow::response(400, "Invalid ID number format. It should be 18 characters long, with digits and possibly ending in 'X'.");
+        }
+
+        if (isIdNumberDuplicate(idNumberStr)) {
+            return crow::response(400, "ID number is already registered.");
         }
 
         Patient newPatient;
-        newPatient.id = patients.size() + 1;
+        newPatient.idNumber = idNumberStr;
         newPatient.name = name;
         newPatient.address = address;
         newPatient.medicalHistory = medicalHistory;
-        patients.push_back(newPatient);
+
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            patients.push_back(newPatient);
+        }
 
         crow::json::wvalue response;
         response["message"] = "Patient registered successfully!";
-        response["patientId"] = newPatient.id;
-        return crow::response(response);
-    }
+        response["idNumber"] = newPatient.idNumber;
+        return crow::response(200, response);
+    });
 
-    auto body = crow::json::load(req.body);
-    if (!body) {
-        return crow::response(400, "Invalid JSON data");
-    }
-
-    if (!body["name"] || !body["address"] || !body["medicalHistory"]) {
-        return crow::response(400, "Missing required fields: name, address, or medicalHistory");
-    }
-
-    Patient newPatient;
-    newPatient.id = patients.size() + 1;
-    newPatient.name = body["name"].s();
-    newPatient.address = body["address"].s();
-    newPatient.medicalHistory = body["medicalHistory"].s();
-    patients.push_back(newPatient);
-
-    crow::json::wvalue response;
-    response["message"] = "Patient registered successfully!";
-    response["patientId"] = newPatient.id;
-    return crow::response(response);
-});
-
-CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::POST, crow::HTTPMethod::GET)([](const crow::request& req) {
-    if (req.method == crow::HTTPMethod::GET) {
+    CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
         auto qs = req.url_params;
-        const char* patientIdStr = qs.get("patientId");
+
+        const char* idNumber = qs.get("idNumber");
         const char* date = qs.get("date");
         const char* time = qs.get("time");
-        
-        if (!patientIdStr || !date || !time) {
-            return crow::response(400, "Missing required query parameters: patientId, date, or time");
+        if (!idNumber || !date || !time) {
+            return crow::response(400, "Missing required parameters: idNumber, date, time.");
         }
 
-        int patientId = std::atoi(patientIdStr);
+        std::string idNumberStr = idNumber;
         bool patientExists = false;
-        for (const auto& patient : patients) {
-            if (patient.id == patientId) {
-                patientExists = true;
-                break;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            for (const auto& patient : patients) {
+                if (patient.idNumber == idNumberStr) {
+                    patientExists = true;
+                    break;
+                }
             }
         }
         if (!patientExists) {
-            return crow::response(404, "Patient not found");
+            return crow::response(404, "Patient not found.");
         }
-        for (const auto& appointment : appointments) {
-            if (appointment.date == date && appointment.time == time) {
-                return crow::response(400, "Appointment slot already taken");
-            }
+        if (!isValidAppointmentTime(time)) {
+            return crow::response(400, "Invalid appointment time. It must be between 09:00 and 17:00, and in 10-minute intervals.");
         }
-
-        Appointment newAppointment = {patientId, date, time};
-        appointments.push_back(newAppointment);
-
+        if (isAppointmentSlotTaken(date, time)) {
+            return crow::response(400, "Appointment slot already taken.");
+        }
+        Appointment newAppointment = { idNumberStr, date, time };
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            appointments.push_back(newAppointment);
+        }
         crow::json::wvalue response;
         response["message"] = "Appointment booked successfully!";
-        return crow::response(response);
-    }
-
-    auto body = crow::json::load(req.body);
-    if (!body) {
-        return crow::response(400, "Invalid JSON data");
-    }
-
-    if (!body["patientId"] || !body["date"] || !body["time"]) {
-        return crow::response(400, "Missing required fields: patientId, date, or time");
-    }
-
-    int patientId = body["patientId"].i();
-    std::string date = body["date"].s();
-    std::string time = body["time"].s();
-
-    bool patientExists = false;
-    for (const auto& patient : patients) {
-        if (patient.id == patientId) {
-            patientExists = true;
-            break;
-        }
-    }
-    if (!patientExists) {
-        return crow::response(404, "Patient not found");
-    }
-
-    for (const auto& appointment : appointments) {
-        if (appointment.date == date && appointment.time == time) {
-            return crow::response(400, "Appointment slot already taken");
-        }
-    }
-
-    Appointment newAppointment = {patientId, date, time};
-    appointments.push_back(newAppointment);
-
-    crow::json::wvalue response;
-    response["message"] = "Appointment booked successfully!";
-    return crow::response(response);
-});
-
-    // Start the server on port 8080
+        response["idNumber"] = idNumberStr;
+        response["date"] = date;
+        response["time"] = time;
+        return crow::response(200, response);
+    });
     app.port(8080).multithreaded().run();
 }
