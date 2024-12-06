@@ -1,6 +1,9 @@
 #include "crow.h"
 #include <vector>
 #include <string>
+#include <regex>
+#include <mutex>
+#include <sstream>
 
 struct Patient {
     int id;
@@ -17,13 +20,44 @@ struct Appointment {
 
 std::vector<Patient> patients;
 std::vector<Appointment> appointments;
+std::mutex dataMutex; 
+
+bool isValidAppointmentTime(const std::string& time) {
+    std::regex timeRegex(R"(^([0-1][0-9]|2[0-3]):([0-5][0-9])$)");
+    if (!std::regex_match(time, timeRegex)) {
+        return false;
+    }
+
+    int hour, minute;
+    char colon;
+    std::istringstream(time) >> hour >> colon >> minute;
+
+    if (hour < 9 || hour > 17 || (hour == 17 && minute > 0)) {
+        return false;
+    }
+    if (minute % 10 != 0) {
+        return false;
+    }
+
+    return true;
+}
+
+bool isAppointmentSlotTaken(const std::string& date, const std::string& time) {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    for (const auto& appointment : appointments) {
+        if (appointment.date == date && appointment.time == time) {
+            return true;
+        }
+    }
+    return false;
+}
 
 int main() {
     crow::SimpleApp app;
 
 
-    CROW_ROUTE(app, "/")([]() {
-        return "Welcome to the Healthcare System API";
+CROW_ROUTE(app, "/")([]() {
+    return "Welcome to the Healthcare System ";
     });
 
 
@@ -147,6 +181,37 @@ CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::POST, crow::HTTPM
     response["message"] = "Appointment booked successfully!";
     return crow::response(response);
 });
+
+CROW_ROUTE(app, "/patients").methods(crow::HTTPMethod::GET)([]() {
+    crow::json::wvalue response;
+    std::vector<crow::json::wvalue> patientList;
+    for (const auto& patient : patients) {
+        crow::json::wvalue patientInfo;
+        patientInfo["id"] = patient.id;
+        patientInfo["name"] = patient.name;
+        patientInfo["address"] = patient.address;
+        patientInfo["medicalHistory"] = patient.medicalHistory;
+        patientList.push_back(std::move(patientInfo));
+    }
+    response["patients"] = std::move(patientList);
+    return crow::response(response);
+});
+
+CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([]() {
+    crow::json::wvalue response;
+    std::vector<crow::json::wvalue> appointmentList;
+    for (const auto& appointment : appointments) {
+        crow::json::wvalue appointmentInfo;
+        appointmentInfo["patientId"] = appointment.patientId;
+        appointmentInfo["date"] = appointment.date;
+        appointmentInfo["time"] = appointment.time;
+        appointmentList.push_back(std::move(appointmentInfo));
+    }
+    response["appointments"] = std::move(appointmentList);
+    return crow::response(response);
+});
+
+
 
     // Start the server on port 8080
     app.port(8080).multithreaded().run();
