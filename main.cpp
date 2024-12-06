@@ -73,6 +73,7 @@ int main() {
         return "Welcome to the Digital Healthcare System API!";
     });
 
+
     CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
         auto qs = req.url_params;
         const char* name = qs.get("name");
@@ -109,6 +110,45 @@ int main() {
         response["idNumber"] = newPatient.idNumber;
         return crow::response(200, response);
     });
+
+    CROW_ROUTE(app, "/patients").methods(crow::HTTPMethod::GET)([]() {
+        crow::json::wvalue response;
+        response["patients"] = crow::json::wvalue::list(); // 初始化为数组类型
+
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            size_t index = 0; // 显式索引
+            for (const auto& patient : patients) {
+                // 动态分配 JSON 对象
+                response["patients"][index]["idNumber"] = patient.idNumber;
+                response["patients"][index]["name"] = patient.name;
+                response["patients"][index]["address"] = patient.address;
+                response["patients"][index]["medicalHistory"] = patient.medicalHistory;
+                index++; // 增加索引
+            }
+        }
+
+        return crow::response(200, response);
+        });
+
+    CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([]() {
+        crow::json::wvalue response;
+        response["appointments"] = crow::json::wvalue::list(); // 初始化为数组类型
+
+        {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            size_t index = 0; // 显式索引
+            for (const auto& appointment : appointments) {
+                // 动态分配 JSON 对象
+                response["appointments"][index]["idNumber"] = appointment.idNumber;
+                response["appointments"][index]["date"] = appointment.date;
+                response["appointments"][index]["time"] = appointment.time;
+                index++; // 增加索引
+            }
+        }
+
+        return crow::response(200, response);
+        });
 
     CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
         auto qs = req.url_params;
