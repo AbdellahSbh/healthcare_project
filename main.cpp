@@ -113,18 +113,19 @@ int main() {
 
     CROW_ROUTE(app, "/patients").methods(crow::HTTPMethod::GET)([]() {
         crow::json::wvalue response;
-        response["patients"] = crow::json::wvalue::list(); // 初始化为数组类型
+        response["patients"] = crow::json::wvalue::list();
 
         {
             std::lock_guard<std::mutex> lock(dataMutex);
-            size_t index = 0; // 显式索引
+            size_t index = 0; 
             for (const auto& patient : patients) {
-                // 动态分配 JSON 对象
-                response["patients"][index]["idNumber"] = patient.idNumber;
+                std::string shortId = patient.idNumber.substr(patient.idNumber.size() - 6);
+
+                response["patients"][index]["idNumber"] = shortId;
                 response["patients"][index]["name"] = patient.name;
                 response["patients"][index]["address"] = patient.address;
                 response["patients"][index]["medicalHistory"] = patient.medicalHistory;
-                index++; // 增加索引
+                index++; 
             }
         }
 
@@ -133,17 +134,18 @@ int main() {
 
     CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([]() {
         crow::json::wvalue response;
-        response["appointments"] = crow::json::wvalue::list(); // 初始化为数组类型
+        response["appointments"] = crow::json::wvalue::list();
 
         {
             std::lock_guard<std::mutex> lock(dataMutex);
-            size_t index = 0; // 显式索引
+            size_t index = 0; 
             for (const auto& appointment : appointments) {
-                // 动态分配 JSON 对象
-                response["appointments"][index]["idNumber"] = appointment.idNumber;
+                std::string shortId = appointment.idNumber.substr(appointment.idNumber.size() - 6); 
+
+                response["appointments"][index]["idNumber"] = shortId;
                 response["appointments"][index]["date"] = appointment.date;
                 response["appointments"][index]["time"] = appointment.time;
-                index++; // 增加索引
+                index++; 
             }
         }
 
