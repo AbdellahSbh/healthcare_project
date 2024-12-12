@@ -17,7 +17,16 @@ struct Appointment {
     std::string date;
     std::string time;
 };
+struct MedicalRecord {
+    int recordId;
+    int patientId;
+    std::string visitDate;
+    std::string notes;
+    std::string diagnosis;
+};
 
+
+std::vector<MedicalRecord> medicalRecords;
 std::vector<Patient> patients;
 std::vector<Appointment> appointments;
 std::mutex dataMutex; 
@@ -41,6 +50,12 @@ bool isValidAppointmentTime(const std::string& time) {
 
     return true;
 }
+
+bool isValidDate(const std::string& date) {
+    std::regex dateRegex(R"(\d{4}-\d{2}-\d{2})");
+    return std::regex_match(date, dateRegex);
+}
+
 
 bool isAppointmentSlotTaken(const std::string& date, const std::string& time) {
     std::lock_guard<std::mutex> lock(dataMutex);
@@ -210,7 +225,96 @@ CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([]() {
     response["appointments"] = std::move(appointmentList);
     return crow::response(response);
 });
+CROW_ROUTE(app, "/add_record").methods(crow::HTTPMethod::GET, crow::HTTPMethod::POST)([](const crow::request& req) {
+    if (req.method == crow::HTTPMethod::GET) {
+        auto qs = req.url_params;
+        const char* patientIdStr = qs.get("patientId");
+        const char* visitDate = qs.get("visitDate");
+        const char* notes = qs.get("notes");
+        const char* diagnosis = qs.get("diagnosis");
 
+        if (!patientIdStr || !visitDate || !notes || !diagnosis) {
+            return crow::response(400, "Missing required parameters: patientId, visitDate, notes, diagnosis");
+        }
+
+        int patientId = std::atoi(patientIdStr);
+
+        bool patientExists = false;
+        for (const auto& patient : patients) {
+            if (patient.id == patientId) {
+                patientExists = true;
+                break;
+            }
+        }
+        if (!patientExists) {
+            return crow::response(404, "Patient not found");
+        }
+        MedicalRecord newRecord = {
+            (int)medicalRecords.size() + 1,
+            patientId,
+            visitDate,
+            notes,
+            diagnosis
+        };
+        medicalRecords.push_back(newRecord);
+
+        crow::json::wvalue response;
+        response["message"] = "Medical record added successfully!";
+        response["recordId"] = newRecord.recordId;
+        return crow::response(response);
+    }
+    auto body = crow::json::load(req.body);
+    if (!body || !body["patientId"] || !body["visitDate"] || !body["notes"] || !body["diagnosis"]) {
+        return crow::response(400, "Missing required fields");
+    }
+
+    int patientId = body["patientId"].i();
+    std::string visitDate = body["visitDate"].s();
+    std::string notes = body["notes"].s();
+    std::string diagnosis = body["diagnosis"].s();
+
+    bool patientExists = false;
+    for (const auto& patient : patients) {
+        if (patient.id == patientId) {
+            patientExists = true;
+            break;
+        }
+    }
+    if (!patientExists) {
+        return crow::response(404, "Patient not found");
+    }
+
+    MedicalRecord newRecord = { (int)medicalRecords.size() + 1, patientId, visitDate, notes, diagnosis };
+    medicalRecords.push_back(newRecord);
+
+    crow::json::wvalue response;
+    response["message"] = "Medical record added successfully!";
+    response["recordId"] = newRecord.recordId;
+    return crow::response(response);
+});
+
+CROW_ROUTE(app, "/medical_history/<int>").methods(crow::HTTPMethod::GET)([](int patientId) {
+    crow::json::wvalue response;
+    std::vector<crow::json::wvalue> recordList;
+
+    for (const auto& record : medicalRecords) {
+        if (record.patientId == patientId) {
+            crow::json::wvalue recordInfo;
+            recordInfo["patientId"] = record.patientId;
+            recordInfo["recordId"] = record.recordId;
+            recordInfo["visitDate"] = record.visitDate;
+            recordInfo["notes"] = record.notes;
+            recordInfo["diagnosis"] = record.diagnosis;
+            recordList.push_back(std::move(recordInfo));
+        }
+    }
+
+    if (recordList.empty()) {
+        return crow::response(404, "No medical records found for this patient");
+    }
+    response["medicalRecords"] = std::move(recordList);
+    return crow::response(response);
+});
 
 
     // Start the server on port 8080
