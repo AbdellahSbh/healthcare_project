@@ -14,7 +14,17 @@ struct Patient {
     std::string name;
     std::string address;
     std::string medicalHistory;
+    int doctorId;
 };
+
+struct Doctor {
+    int id;
+    std::string name;
+    std::string specialty;
+    std::string contactInfo;
+};
+
+
 
 struct Appointment {
     int patientId; 
@@ -34,6 +44,8 @@ std::vector<MedicalRecord> medicalRecords;
 std::vector<Patient> patients;
 std::vector<Appointment> appointments;
 std::mutex dataMutex; 
+std::vector<Doctor> doctors;
+
 
 void saveToFile(const std::string& filename, const json& data) {
     std::ofstream file(filename, std::ios::out | std::ios::trunc);
@@ -50,11 +62,13 @@ void savePatientsToFile() {
             {"id", patient.id},
             {"name", patient.name},
             {"address", patient.address},
-            {"medicalHistory", patient.medicalHistory}
+            {"medicalHistory", patient.medicalHistory},
+            {"doctorId", patient.doctorId}
         });
     }
     saveToFile("patients.json", patientList);
 }
+
 
 void saveAppointmentsToFile() {
     json appointmentList = json::array();
@@ -82,6 +96,20 @@ void saveMedicalRecordsToFile() {
     saveToFile("medical_records.json", recordList);
 }
 
+void saveDoctorsToFile() {
+    json doctorList = json::array();
+    for (const auto& doctor : doctors) {
+        doctorList.push_back({
+            {"id", doctor.id},
+            {"name", doctor.name},
+            {"specialty", doctor.specialty},
+            {"contactInfo", doctor.contactInfo}
+        });
+    }
+    saveToFile("doctors.json", doctorList);
+}
+
+
 void ensureFileExists(const std::string& filename) {
     std::ifstream file(filename);
     if (!file.is_open()) {
@@ -99,10 +127,18 @@ void loadFromFile(const std::string& filename, json& data) {
     }
 }
 
+
 void loadPatientsFromFile() {
+    ensureFileExists("patients.json");
     json patientList;
     loadFromFile("patients.json", patientList);
+
     for (const auto& item : patientList) {
+        if (!item.contains("id") || !item.contains("name") ||
+            !item.contains("address") || !item.contains("medicalHistory")) {
+            continue;  // Skip invalid entries
+        }
+
         Patient patient;
         patient.id = item["id"];
         patient.name = item["name"];
@@ -111,6 +147,23 @@ void loadPatientsFromFile() {
         patients.push_back(patient);
     }
 }
+
+void loadDoctorsFromFile() {
+    ensureFileExists("doctors.json");
+    json doctorList;
+    loadFromFile("doctors.json", doctorList);
+
+    for (const auto& item : doctorList) {
+        Doctor doctor;
+        doctor.id = item["id"];
+        doctor.name = item["name"];
+        doctor.specialty = item["specialty"];
+        doctor.contactInfo = item["contactInfo"];
+        doctors.push_back(doctor);
+    }
+}
+
+
 
 void loadAppointmentsFromFile() {
     json appointmentList;
@@ -181,6 +234,8 @@ int main() {
 loadPatientsFromFile();
 loadAppointmentsFromFile();
 loadMedicalRecordsFromFile();
+loadDoctorsFromFile();
+
 
 
 
@@ -191,14 +246,26 @@ CROW_ROUTE(app, "/")([]() {
 
 CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::POST, crow::HTTPMethod::GET)([](const crow::request& req) {
     if (req.method == crow::HTTPMethod::GET) {
-
         auto qs = req.url_params;
         const char* name = qs.get("name");
         const char* address = qs.get("address");
         const char* medicalHistory = qs.get("medicalHistory");
+        const char* doctorIdStr = qs.get("doctorId");
 
-        if (!name || !address || !medicalHistory) {
-            return crow::response(400, "Missing required parameters: name, address, or medicalHistory");
+        if (!name || !address || !medicalHistory || !doctorIdStr) {
+            return crow::response(400, "Missing required parameters: name, address, medicalHistory, or doctorId");
+        }
+
+        int doctorId = std::atoi(doctorIdStr);
+        bool doctorExists = false;
+        for (const auto& doctor : doctors) {
+            if (doctor.id == doctorId) {
+                doctorExists = true;
+                break;
+            }
+        }
+        if (!doctorExists) {
+            return crow::response(404, "Doctor not found");
         }
 
         Patient newPatient;
@@ -206,35 +273,18 @@ CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::POST, crow::HTTPMethod::G
         newPatient.name = name;
         newPatient.address = address;
         newPatient.medicalHistory = medicalHistory;
+        newPatient.doctorId = doctorId;
         patients.push_back(newPatient);
         savePatientsToFile();
 
         crow::json::wvalue response;
         response["message"] = "Patient registered successfully!";
         response["patientId"] = newPatient.id;
-        return crow::response(response);
+        return crow::response(response); 
     }
 
-    auto body = crow::json::load(req.body);
-    if (!body) {
-        return crow::response(400, "Invalid JSON data");
-    }
-
-    if (!body["name"] || !body["address"] || !body["medicalHistory"]) {
-        return crow::response(400, "Missing required fields: name, address, or medicalHistory");
-    }
-
-    Patient newPatient;
-    newPatient.id = patients.size() + 1;
-    newPatient.name = body["name"].s();
-    newPatient.address = body["address"].s();
-    newPatient.medicalHistory = body["medicalHistory"].s();
-    patients.push_back(newPatient);
-
-    crow::json::wvalue response;
-    response["message"] = "Patient registered successfully!";
-    response["patientId"] = newPatient.id;
-    return crow::response(response);
+    
+    return crow::response(405, "Method Not Allowed");
 });
 
 CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::POST, crow::HTTPMethod::GET)([](const crow::request& req) {
@@ -340,6 +390,52 @@ CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([]() {
     response["appointments"] = std::move(appointmentList);
     return crow::response(response);
 });
+
+CROW_ROUTE(app, "/register_doctor").methods(crow::HTTPMethod::POST, crow::HTTPMethod::GET)([](const crow::request& req) {
+    if (req.method == crow::HTTPMethod::GET) {
+        auto qs = req.url_params;
+        const char* name = qs.get("name");
+        const char* specialty = qs.get("specialty");
+        const char* contactInfo = qs.get("contactInfo");
+
+        if (!name || !specialty || !contactInfo) {
+            return crow::response(400, "Missing required parameters: name, specialty, or contactInfo");
+        }
+
+        Doctor newDoctor;
+        newDoctor.id = doctors.size() + 1;
+        newDoctor.name = name;
+        newDoctor.specialty = specialty;
+        newDoctor.contactInfo = contactInfo;
+        doctors.push_back(newDoctor);
+        saveDoctorsToFile();
+
+        crow::json::wvalue response;
+        response["message"] = "Doctor registered successfully!";
+        response["doctorId"] = newDoctor.id;
+        return crow::response(response);
+    }
+
+    auto body = crow::json::load(req.body);
+    if (!body || !body["name"] || !body["specialty"] || !body["contactInfo"]) {
+        return crow::response(400, "Missing required fields: name, specialty, or contactInfo");
+    }
+
+    Doctor newDoctor;
+    newDoctor.id = doctors.size() + 1;
+    newDoctor.name = body["name"].s();
+    newDoctor.specialty = body["specialty"].s();
+    newDoctor.contactInfo = body["contactInfo"].s();
+    doctors.push_back(newDoctor);
+    saveDoctorsToFile();
+
+    crow::json::wvalue response;
+    response["message"] = "Doctor registered successfully!";
+    response["doctorId"] = newDoctor.id;
+    return crow::response(response);
+});
+
+
 CROW_ROUTE(app, "/add_record").methods(crow::HTTPMethod::GET, crow::HTTPMethod::POST)([](const crow::request& req) {
     if (req.method == crow::HTTPMethod::GET) {
         auto qs = req.url_params;
@@ -408,6 +504,48 @@ CROW_ROUTE(app, "/add_record").methods(crow::HTTPMethod::GET, crow::HTTPMethod::
     response["recordId"] = newRecord.recordId;
     return crow::response(response);
 });
+
+
+CROW_ROUTE(app, "/doctors").methods(crow::HTTPMethod::GET)([]() {
+    crow::json::wvalue response;
+    std::vector<crow::json::wvalue> doctorList;
+    for (const auto& doctor : doctors) {
+        crow::json::wvalue doctorInfo;
+        doctorInfo["id"] = doctor.id;
+        doctorInfo["name"] = doctor.name;
+        doctorInfo["specialty"] = doctor.specialty;
+        doctorInfo["contactInfo"] = doctor.contactInfo;
+        doctorList.push_back(std::move(doctorInfo));
+    }
+    response["doctors"] = std::move(doctorList);
+    return crow::response(response);
+});
+
+
+CROW_ROUTE(app, "/patients_by_doctor/<int>").methods(crow::HTTPMethod::GET)([](int doctorId) {
+    crow::json::wvalue response;
+    std::vector<crow::json::wvalue> patientList;
+
+    for (const auto& patient : patients) {
+        if (patient.doctorId == doctorId) {
+            crow::json::wvalue patientInfo;
+            patientInfo["id"] = patient.id;
+            patientInfo["name"] = patient.name;
+            patientInfo["address"] = patient.address;
+            patientInfo["medicalHistory"] = patient.medicalHistory;
+            patientInfo["doctorId"] = patient.doctorId;
+            patientList.push_back(std::move(patientInfo));
+        }
+    }
+
+    if (patientList.empty()) {
+        return crow::response(404, "No patients found for this doctor");
+    }
+
+    response["patients"] = std::move(patientList);
+    return crow::response(response);
+});
+
 
 CROW_ROUTE(app, "/medical_history/<int>").methods(crow::HTTPMethod::GET)([](int patientId) {
     crow::json::wvalue response;
