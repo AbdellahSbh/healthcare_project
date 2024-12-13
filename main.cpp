@@ -4,6 +4,10 @@
 #include <regex>
 #include <mutex>
 #include <sstream>
+#include <fstream>           
+#include <nlohmann/json.hpp> 
+using json = nlohmann::json;
+
 
 struct Patient {
     int id;
@@ -30,6 +34,111 @@ std::vector<MedicalRecord> medicalRecords;
 std::vector<Patient> patients;
 std::vector<Appointment> appointments;
 std::mutex dataMutex; 
+
+void saveToFile(const std::string& filename, const json& data) {
+    std::ofstream file(filename, std::ios::out | std::ios::trunc);
+    if (file.is_open()) {
+        file << data.dump(4); 
+        file.close();
+    }
+}
+
+void savePatientsToFile() {
+    json patientList = json::array();
+    for (const auto& patient : patients) {
+        patientList.push_back({
+            {"id", patient.id},
+            {"name", patient.name},
+            {"address", patient.address},
+            {"medicalHistory", patient.medicalHistory}
+        });
+    }
+    saveToFile("patients.json", patientList);
+}
+
+void saveAppointmentsToFile() {
+    json appointmentList = json::array();
+    for (const auto& appointment : appointments) {
+        appointmentList.push_back({
+            {"patientId", appointment.patientId},
+            {"date", appointment.date},
+            {"time", appointment.time}
+        });
+    }
+    saveToFile("appointments.json", appointmentList);
+}
+
+void saveMedicalRecordsToFile() {
+    json recordList = json::array();
+    for (const auto& record : medicalRecords) {
+        recordList.push_back({
+            {"recordId", record.recordId},
+            {"patientId", record.patientId},
+            {"visitDate", record.visitDate},
+            {"notes", record.notes},
+            {"diagnosis", record.diagnosis}
+        });
+    }
+    saveToFile("medical_records.json", recordList);
+}
+
+void ensureFileExists(const std::string& filename) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::ofstream newFile(filename);
+        newFile << "[]" << std::endl;  
+        newFile.close();
+    }
+}
+
+void loadFromFile(const std::string& filename, json& data) {
+    std::ifstream file(filename);
+    if (file.is_open()) {
+        file >> data;
+        file.close();
+    }
+}
+
+void loadPatientsFromFile() {
+    json patientList;
+    loadFromFile("patients.json", patientList);
+    for (const auto& item : patientList) {
+        Patient patient;
+        patient.id = item["id"];
+        patient.name = item["name"];
+        patient.address = item["address"];
+        patient.medicalHistory = item["medicalHistory"];
+        patients.push_back(patient);
+    }
+}
+
+void loadAppointmentsFromFile() {
+    json appointmentList;
+    loadFromFile("appointments.json", appointmentList);
+    for (const auto& item : appointmentList) {
+        Appointment appointment;
+        appointment.patientId = item["patientId"];
+        appointment.date = item["date"];
+        appointment.time = item["time"];
+        appointments.push_back(appointment);
+    }
+}
+
+void loadMedicalRecordsFromFile() {
+    json recordList;
+    loadFromFile("medical_records.json", recordList);
+    for (const auto& item : recordList) {
+        MedicalRecord record;
+        record.recordId = item["recordId"];
+        record.patientId = item["patientId"];
+        record.visitDate = item["visitDate"];
+        record.notes = item["notes"];
+        record.diagnosis = item["diagnosis"];
+        medicalRecords.push_back(record);
+    }
+}
+
+
 
 bool isValidAppointmentTime(const std::string& time) {
     std::regex timeRegex(R"(^([0-1][0-9]|2[0-3]):([0-5][0-9])$)");
@@ -69,6 +178,10 @@ bool isAppointmentSlotTaken(const std::string& date, const std::string& time) {
 
 int main() {
     crow::SimpleApp app;
+loadPatientsFromFile();
+loadAppointmentsFromFile();
+loadMedicalRecordsFromFile();
+
 
 
 CROW_ROUTE(app, "/")([]() {
@@ -94,6 +207,7 @@ CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::POST, crow::HTTPMethod::G
         newPatient.address = address;
         newPatient.medicalHistory = medicalHistory;
         patients.push_back(newPatient);
+        savePatientsToFile();
 
         crow::json::wvalue response;
         response["message"] = "Patient registered successfully!";
@@ -153,6 +267,7 @@ CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::POST, crow::HTTPM
 
         Appointment newAppointment = {patientId, date, time};
         appointments.push_back(newAppointment);
+        saveAppointmentsToFile();
 
         crow::json::wvalue response;
         response["message"] = "Appointment booked successfully!";
@@ -286,6 +401,7 @@ CROW_ROUTE(app, "/add_record").methods(crow::HTTPMethod::GET, crow::HTTPMethod::
 
     MedicalRecord newRecord = { (int)medicalRecords.size() + 1, patientId, visitDate, notes, diagnosis };
     medicalRecords.push_back(newRecord);
+    saveMedicalRecordsToFile();
 
     crow::json::wvalue response;
     response["message"] = "Medical record added successfully!";
@@ -314,6 +430,7 @@ CROW_ROUTE(app, "/medical_history/<int>").methods(crow::HTTPMethod::GET)([](int 
     }
     response["medicalRecords"] = std::move(recordList);
     return crow::response(response);
+    
 });
 
 
