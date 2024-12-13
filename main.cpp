@@ -39,14 +39,6 @@ struct MedicalRecord {
     std::string diagnosis;
 };
 
-struct Prescription {
-    int prescriptionId;
-    int patientId;
-    std::string medication;
-    std::string dosage;
-    std::string instructions;
-};
-
 std::vector<MedicalRecord> medicalRecords;
 std::vector<Patient> patients;
 std::vector<Appointment> appointments;
@@ -577,27 +569,5 @@ CROW_ROUTE(app, "/medical_history/<int>").methods(crow::HTTPMethod::GET)([](int 
     return crow::response(response);
     
 });
-
-CROW_ROUTE(app, "/add_prescription").methods(crow::HTTPMethod::POST)([](const crow::request& req) {
-    auto body = crow::json::load(req.body);
-    if (!body || !body["patientId"] || !body["medication"] || !body["dosage"] || !body["instructions"]) {
-        return crow::response(400, "Missing required fields");
-    }
-    Prescription newPrescription = {
-        (int)prescriptions.size() + 1,
-        body["patientId"].i(),
-        body["medication"].s(),
-        body["dosage"].s(),
-        body["instructions"].s()
-    };
-    prescriptions.push_back(newPrescription);
-    savePrescriptionsToFile();
-    crow::json::wvalue response;
-    response["message"] = "Prescription added successfully!";
-    response["prescriptionId"] = newPrescription.prescriptionId;
-    return crow::response(response);
-});
-
-    // Start the server on port 8080
     app.port(8080).multithreaded().run();
 }
