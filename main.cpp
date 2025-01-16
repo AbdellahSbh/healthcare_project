@@ -729,6 +729,7 @@ int main() {
             crow::json::wvalue resp;
             resp["message"] = "Medical record added successfully";
             resp["recordId"] = newRecord.recordId;
+            resp["doctorId"] = newRecord.doctorId;
             resp["patientId"] = newRecord.patientId;
             resp["visitDate"] = newRecord.visitDate;
             return crow::response(resp);
