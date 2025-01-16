@@ -36,6 +36,7 @@ struct Appointment {
 struct MedicalRecord {
     int recordId;
     int patientId;
+    int doctorId;
     std::string visitDate;  // YYYY-MM-DD
     std::string notes;
     std::string diagnosis;
@@ -208,6 +209,7 @@ void saveMedicalRecordsToFile() {
         arr.push_back({
             {"recordId", r.recordId},
             {"patientId", r.patientId},
+            {"doctorId", r.doctorId},
             {"visitDate", r.visitDate},
             {"notes", r.notes},
             {"diagnosis", r.diagnosis}
@@ -222,7 +224,7 @@ void loadMedicalRecordsFromFile() {
     loadFromFile("medical_records.json", arr);
 
     for (auto& item : arr) {
-        if (!item.contains("recordId") || !item.contains("patientId") ||
+        if (!item.contains("recordId") || !item.contains("patientId") || !item.contains("doctorId") ||
             !item.contains("visitDate") || !item.contains("notes") ||
             !item.contains("diagnosis")) {
             continue;
@@ -230,6 +232,7 @@ void loadMedicalRecordsFromFile() {
         MedicalRecord r;
         r.recordId = item["recordId"].get<int>();
         r.patientId = item["patientId"].get<int>();
+        r.doctorId = item["doctorId"].get<int>();
         r.visitDate = item["visitDate"].get<std::string>();
         r.notes = item["notes"].get<std::string>();
         r.diagnosis = item["diagnosis"].get<std::string>();
@@ -505,27 +508,6 @@ int main() {
         }
         saveBillsToFile();
 
-        // Update medical record to track this appointment
-        // We'll add a new record with the date/time and a brief note
-        {
-            MedicalRecord record;
-            {
-                std::lock_guard<std::mutex> lock(dataMutex);
-                record.recordId = (int)medicalRecords.size() + 1;
-            }
-            record.patientId = patientId;
-            record.visitDate = dateStr;
-            // We'll store appointment info in "notes"
-            record.notes = "Appointment with doctorId=" + std::to_string(doctorId)
-                + " at " + timeStr;
-            record.diagnosis = "N/A (appointment booked)";
-
-            {
-                std::lock_guard<std::mutex> lock(dataMutex);
-                medicalRecords.push_back(record);
-            }
-            saveMedicalRecordsToFile();
-        }
 
         crow::json::wvalue resp;
         resp["message"] = "Appointment booked successfully";
@@ -545,6 +527,44 @@ int main() {
         });
 
 
+
+
+    CROW_ROUTE(app, "/patients/<int>").methods(crow::HTTPMethod::GET)([](int id) {
+        crow::json::wvalue resp;
+        auto patientIt = std::find_if(patients.begin(), patients.end(), [&](const Patient& p) {
+            return p.id == id;
+            });
+
+        if (patientIt == patients.end()) {
+            return crow::response(404, "Patient not found");
+        }
+
+        crow::json::wvalue p;
+        p["id"] = patientIt->id;
+        p["name"] = patientIt->name;
+        p["address"] = patientIt->address;
+        p["medicalHistory"] = patientIt->medicalHistory;
+        p["hasInsurance"] = patientIt->hasInsurance;
+        p["insuranceCompany"] = patientIt->insuranceCompany;
+
+        // Add this patient's prescriptions
+        std::vector<crow::json::wvalue> prescArr;
+        for (auto& pr : prescriptions) {
+            if (pr.patientId == id) {
+                crow::json::wvalue item;
+                item["prescriptionId"] = pr.prescriptionId;
+                item["medication"] = pr.medication;
+                item["dosage"] = pr.dosage;
+                item["instructions"] = pr.instructions;
+                item["datePrescribed"] = pr.datePrescribed;
+                prescArr.push_back(std::move(item));
+            }
+        }
+        p["prescriptions"] = std::move(prescArr);
+
+        resp["patient"] = std::move(p);
+        return crow::response(resp);
+        });
     //  view all patients 
     // Show each patient's prescriptions in the response
 
@@ -634,6 +654,86 @@ int main() {
         return crow::response(resp);
         });
 
+
+    CROW_ROUTE(app, "/add_medical_record").methods(crow::HTTPMethod::GET)(
+        [](const crow::request& req) {
+            auto qs = req.url_params;
+            const char* patientIdStr = qs.get("patientId");
+            const char* doctorIdStr = qs.get("doctorId");
+            const char* diagnosis = qs.get("diagnosis");
+            const char* notes = qs.get("notes");
+
+            if (!patientIdStr || !doctorIdStr || !diagnosis || !notes) {
+                return crow::response(400, "Missing required parameters: patientId, doctorId, diagnosis, notes");
+            }
+
+            int patientId = std::atoi(patientIdStr);
+            int doctorId = std::atoi(doctorIdStr);
+
+            // Validate patient
+            auto patIt = std::find_if(patients.begin(), patients.end(), [&](const Patient& p) {
+                return p.id == patientId;
+                });
+            if (patIt == patients.end()) {
+                return crow::response(404, "Patient not found");
+            }
+
+            // Validate doctor
+            auto docIt = std::find_if(doctors.begin(), doctors.end(), [&](const Doctor& d) {
+                return d.id == doctorId;
+                });
+            if (docIt == doctors.end()) {
+                return crow::response(404, "Doctor not found");
+            }
+
+            // Find the "most recent" appointment for this (patientId, doctorId).
+            // The logic here is up to you; for simplicity, we'll just pick 
+            // the last one in the appointments vector that matches.
+            // If you prefer the earliest or a specific date, adjust accordingly.
+            std::string chosenDate;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+
+                // We'll search from the end to find the last matching appointment
+                for (auto it = appointments.rbegin(); it != appointments.rend(); ++it) {
+                    if (it->patientId == patientId && it->doctorId == doctorId) {
+                        chosenDate = it->date;
+                        break;
+                    }
+                }
+            }
+            if (chosenDate.empty()) {
+                // No matching appointment found
+                return crow::response(400, "No appointment found for this patient/doctor combination");
+            }
+
+            // Now create the MedicalRecord with that appointment date
+            MedicalRecord newRecord;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                newRecord.recordId = (int)medicalRecords.size() + 1;
+            }
+            newRecord.patientId = patientId;
+            newRecord.doctorId = doctorId;
+            newRecord.visitDate = chosenDate;  // from the last found appointment
+            newRecord.notes = notes;
+            newRecord.diagnosis = diagnosis;
+
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                medicalRecords.push_back(newRecord);
+            }
+            saveMedicalRecordsToFile();
+
+            // Respond with success
+            crow::json::wvalue resp;
+            resp["message"] = "Medical record added successfully";
+            resp["recordId"] = newRecord.recordId;
+            resp["patientId"] = newRecord.patientId;
+            resp["visitDate"] = newRecord.visitDate;
+            return crow::response(resp);
+        }
+        );
     // view doctors 
 
     CROW_ROUTE(app, "/doctors").methods(crow::HTTPMethod::GET)([]() {
@@ -797,6 +897,31 @@ int main() {
         return crow::response(resp);
         });
 
+
+    CROW_ROUTE(app, "/medical_record/<int>").methods(crow::HTTPMethod::GET)([](int patientId) {
+        crow::json::wvalue response;
+        std::vector<crow::json::wvalue> recordList;
+
+        for (const auto& record : medicalRecords) {
+            if (record.patientId == patientId) {
+                crow::json::wvalue recordInfo;
+                recordInfo["recordId"] = record.recordId;
+                recordInfo["patientId"] = record.patientId;
+                recordInfo["doctorId"] = record.doctorId;  // Include doctorId
+                recordInfo["visitDate"] = record.visitDate;
+                recordInfo["notes"] = record.notes;
+                recordInfo["diagnosis"] = record.diagnosis;
+                recordList.push_back(std::move(recordInfo));
+            }
+        }
+
+        if (recordList.empty()) {
+            return crow::response(404, "No medical records found for this patient");
+        }
+
+        response["medicalRecords"] = std::move(recordList);
+        return crow::response(response);
+        });
     // Example:
     // /submit_claim?billId=1
     CROW_ROUTE(app, "/submit_claim").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
