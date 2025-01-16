@@ -602,12 +602,21 @@ int main() {
         });
 
 
-    // view all appointments 
+    // view  appointments  /appointments?patientId=<> to view one
 
-    CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([]() {
+    CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
         crow::json::wvalue resp;
         std::vector<crow::json::wvalue> arr;
+
+        // Parse the query string for patientId
+        auto query_params = crow::query_string(req.url_params);
+        auto patient_id_param = query_params.get("patientId");
+
         for (auto& a : appointments) {
+            // Check if patientId matches if provided
+            if (patient_id_param && std::to_string(a.patientId) != patient_id_param) {
+                continue;
+            }
             crow::json::wvalue item;
             item["patientId"] = a.patientId;
             item["doctorId"] = a.doctorId;
@@ -615,9 +624,11 @@ int main() {
             item["time"] = a.time;
             arr.push_back(std::move(item));
         }
+
         resp["appointments"] = std::move(arr);
         return crow::response(resp);
         });
+
 
 
     // Rregister a new doctor 
@@ -898,7 +909,7 @@ int main() {
         return crow::response(resp);
         });
 
-
+    //view medical_record of patientid 
     CROW_ROUTE(app, "/medical_record/<int>").methods(crow::HTTPMethod::GET)([](int patientId) {
         crow::json::wvalue response;
         std::vector<crow::json::wvalue> recordList;
