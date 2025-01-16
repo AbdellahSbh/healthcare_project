@@ -15,7 +15,10 @@ struct Patient {
     std::string address;
     std::string medicalHistory;
     int doctorId;
+    bool hasInsurance;
+    std::string insuranceProvider;
 };
+
 
 struct Doctor {
     int id;
@@ -24,9 +27,19 @@ struct Doctor {
     std::string contactInfo;
 };
 
+struct Bill {
+    int billId;
+    int appointmentId;
+    int patientId;
+    std::vector<std::pair<std::string, double>> services;
+    double totalCost;
+};
+
+std::vector<Bill> bills;
 
 
 struct Appointment {
+    int id;
     int patientId; 
     std::string date;
     std::string time;
@@ -35,7 +48,7 @@ struct MedicalRecord {
     int recordId;
     int patientId;
     std::string visitDate;
-    std::string notes;
+    std::string prescription;
     std::string diagnosis;
 };
 
@@ -68,11 +81,30 @@ void savePatientsToFile() {
     saveToFile("patients.json", patientList);
 }
 
+void saveBillsToFile() {
+    json billList = json::array();
+    for (const auto& bill : bills) {
+        json servicesJson = json::array();
+        for (const auto& service : bill.services) {
+            servicesJson.push_back({{"name", service.first}, {"cost", service.second}});
+        }
+        billList.push_back({
+            {"billId", bill.billId},
+            {"appointmentId", bill.appointmentId},
+            {"patientId", bill.patientId},
+            {"services", servicesJson},
+            {"totalCost", bill.totalCost}
+        });
+    }
+    saveToFile("bills.json", billList);
+}
+
 
 void saveAppointmentsToFile() {
     json appointmentList = json::array();
     for (const auto& appointment : appointments) {
         appointmentList.push_back({
+            {"id", appointment.id},
             {"patientId", appointment.patientId},
             {"date", appointment.date},
             {"time", appointment.time}
@@ -81,6 +113,7 @@ void saveAppointmentsToFile() {
     saveToFile("appointments.json", appointmentList);
 }
 
+
 void saveMedicalRecordsToFile() {
     json recordList = json::array();
     for (const auto& record : medicalRecords) {
@@ -88,7 +121,7 @@ void saveMedicalRecordsToFile() {
             {"recordId", record.recordId},
             {"patientId", record.patientId},
             {"visitDate", record.visitDate},
-            {"notes", record.notes},
+            {"prescription", record.prescription},
             {"diagnosis", record.diagnosis}
         });
     }
@@ -125,6 +158,26 @@ void loadFromFile(const std::string& filename, json& data) {
         file.close();
     }
 }
+
+
+void loadBillsFromFile() {
+    ensureFileExists("bills.json");
+    json billList;
+    loadFromFile("bills.json", billList);
+
+    for (const auto& item : billList) {
+        Bill bill;
+        bill.billId = item["billId"];
+        bill.appointmentId = item["appointmentId"];
+        bill.patientId = item["patientId"];
+        for (const auto& service : item["services"]) {
+            bill.services.emplace_back(service["name"], service["cost"]);
+        }
+        bill.totalCost = item["totalCost"];
+        bills.push_back(bill);
+    }
+}
+
 
 
 void loadPatientsFromFile() {
@@ -167,14 +220,23 @@ void loadDoctorsFromFile() {
 void loadAppointmentsFromFile() {
     json appointmentList;
     loadFromFile("appointments.json", appointmentList);
+
     for (const auto& item : appointmentList) {
         Appointment appointment;
+
+        if (!item.contains("id") || !item.contains("patientId") || 
+            !item.contains("date") || !item.contains("time")) {
+            continue;  // Skip invalid entries
+        }
+
+        appointment.id = item["id"];
         appointment.patientId = item["patientId"];
         appointment.date = item["date"];
         appointment.time = item["time"];
         appointments.push_back(appointment);
     }
 }
+
 
 void loadMedicalRecordsFromFile() {
     json recordList;
@@ -184,7 +246,7 @@ void loadMedicalRecordsFromFile() {
         record.recordId = item["recordId"];
         record.patientId = item["patientId"];
         record.visitDate = item["visitDate"];
-        record.notes = item["notes"];
+        record.prescription = item["prescription"];
         record.diagnosis = item["diagnosis"];
         medicalRecords.push_back(record);
     }
@@ -228,12 +290,26 @@ bool isAppointmentSlotTaken(const std::string& date, const std::string& time) {
     return false;
 }
 
+
+void fileInsuranceClaim(const Bill& bill, const Patient& patient) {
+    if (!patient.hasInsurance) {
+        std::cerr << "Patient does not have insurance coverage." << std::endl;
+        return;
+    }
+    // Simulate claim filing
+    std::cout << "Filing claim with " << patient.insuranceProvider
+              << " for appointment ID: " << bill.appointmentId << std::endl;
+}
+
+
 int main() {
     crow::SimpleApp app;
 loadPatientsFromFile();
 loadAppointmentsFromFile();
 loadMedicalRecordsFromFile();
 loadDoctorsFromFile();
+loadBillsFromFile();
+
 
 
 
@@ -314,12 +390,13 @@ CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::POST, crow::HTTPM
             }
         }
 
-        Appointment newAppointment = {patientId, date, time};
+        Appointment newAppointment = {static_cast<int>(appointments.size()) + 1, patientId, date, time};
         appointments.push_back(newAppointment);
         saveAppointmentsToFile();
 
         crow::json::wvalue response;
         response["message"] = "Appointment booked successfully!";
+        response["appointmentId"] = newAppointment.id;
         return crow::response(response);
     }
 
@@ -353,11 +430,13 @@ CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::POST, crow::HTTPM
         }
     }
 
-    Appointment newAppointment = {patientId, date, time};
+    Appointment newAppointment = {static_cast<int>(appointments.size()) + 1, patientId, date, time};
     appointments.push_back(newAppointment);
+    saveAppointmentsToFile();
 
     crow::json::wvalue response;
     response["message"] = "Appointment booked successfully!";
+    response["appointmentId"] = newAppointment.id;
     return crow::response(response);
 });
 
@@ -376,19 +455,120 @@ CROW_ROUTE(app, "/patients").methods(crow::HTTPMethod::GET)([]() {
     return crow::response(response);
 });
 
+CROW_ROUTE(app, "/generate_bill").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
+    auto qs = req.url_params;
+    const char* appointmentIdStr = qs.get("appointmentId");
+    const char* patientIdStr = qs.get("patientId");
+    const char* servicesStr = qs.get("services");
+
+    if (!appointmentIdStr || !patientIdStr || !servicesStr) {
+        return crow::response(400, "Missing required parameters: appointmentId, patientId, services");
+    }
+
+    int appointmentId = std::atoi(appointmentIdStr);
+    int patientId = std::atoi(patientIdStr);
+
+    bool appointmentExists = false;
+    for (const auto& appointment : appointments) {
+        if (appointment.appointmentId == appointmentId && appointment.patientId == patientId) {
+            appointmentExists = true;
+            break;
+        }
+    }
+    if (!appointmentExists) {
+        return crow::response(404, "Appointment not found for the provided ID and patient.");
+    }
+
+    std::vector<std::pair<std::string, double>> services;
+    double totalCost = 0.0;
+
+    std::stringstream ss(servicesStr);
+    std::string service;
+    while (std::getline(ss, service, ',')) {
+        auto pos = service.find(':');
+        if (pos == std::string::npos) {
+            return crow::response(400, "Invalid service format. Use 'Service:Cost,Service:Cost'");
+        }
+
+        std::string serviceName = service.substr(0, pos);
+        double cost = std::stod(service.substr(pos + 1));
+        services.emplace_back(serviceName, cost);
+        totalCost += cost;
+    }
+
+    Bill newBill = {
+        static_cast<int>(bills.size() + 1),
+        appointmentId,
+        patientId,
+        services,
+        totalCost
+    };
+
+    bills.push_back(newBill);
+    saveBillsToFile();
+
+    crow::json::wvalue response;
+    response["message"] = "Bill generated successfully!";
+    response["billId"] = newBill.billId;
+    response["appointmentId"] = appointmentId;
+    response["patientId"] = patientId;
+    response["totalCost"] = totalCost;
+    return crow::response(response);
+});
+
+
+CROW_ROUTE(app, "/file_claim/<int>").methods(crow::HTTPMethod::POST)([](int appointmentId) {
+    // Find the appointment
+    auto appointmentIt = std::find_if(appointments.begin(), appointments.end(), [&](const Appointment& appointment) {
+        return appointment.id == appointmentId;
+    });
+    if (appointmentIt == appointments.end()) {
+        return crow::response(404, "Appointment not found.");
+    }
+
+    auto billIt = std::find_if(bills.begin(), bills.end(), [&](const Bill& bill) {
+        return bill.appointmentId == appointmentId;
+    });
+    if (billIt == bills.end()) {
+        return crow::response(404, "Bill not found for the given appointment.");
+    }
+
+    int patientId = appointmentIt->patientId;
+    auto patientIt = std::find_if(patients.begin(), patients.end(), [&](const Patient& patient) {
+        return patient.id == patientId;
+    });
+    if (patientIt == patients.end()) {
+        return crow::response(404, "Patient not found for the given appointment.");
+    }
+
+    if (!patientIt->hasInsurance) {
+        return crow::response(400, "Patient does not have insurance.");
+    }
+
+    fileInsuranceClaim(*billIt, *patientIt);
+
+    return crow::response(200, "Insurance claim filed successfully.");
+});
+
+
+
 CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([]() {
     crow::json::wvalue response;
     std::vector<crow::json::wvalue> appointmentList;
+
     for (const auto& appointment : appointments) {
         crow::json::wvalue appointmentInfo;
+        appointmentInfo["id"] = appointment.id;           
         appointmentInfo["patientId"] = appointment.patientId;
         appointmentInfo["date"] = appointment.date;
         appointmentInfo["time"] = appointment.time;
         appointmentList.push_back(std::move(appointmentInfo));
     }
+
     response["appointments"] = std::move(appointmentList);
     return crow::response(response);
 });
+
 
 CROW_ROUTE(app, "/register_doctor").methods(crow::HTTPMethod::POST, crow::HTTPMethod::GET)([](const crow::request& req) {
     if (req.method == crow::HTTPMethod::GET) {
@@ -440,11 +620,11 @@ CROW_ROUTE(app, "/add_record").methods(crow::HTTPMethod::GET, crow::HTTPMethod::
         auto qs = req.url_params;
         const char* patientIdStr = qs.get("patientId");
         const char* visitDate = qs.get("visitDate");
-        const char* notes = qs.get("notes");
+        const char* prescription = qs.get("prescription");
         const char* diagnosis = qs.get("diagnosis");
 
-        if (!patientIdStr || !visitDate || !notes || !diagnosis) {
-            return crow::response(400, "Missing required parameters: patientId, visitDate, notes, diagnosis");
+        if (!patientIdStr || !visitDate || !prescription || !diagnosis) {
+            return crow::response(400, "Missing required parameters: patientId, visitDate, prescription, diagnosis");
         }
 
         int patientId = std::atoi(patientIdStr);
@@ -463,7 +643,7 @@ CROW_ROUTE(app, "/add_record").methods(crow::HTTPMethod::GET, crow::HTTPMethod::
             (int)medicalRecords.size() + 1,
             patientId,
             visitDate,
-            notes,
+            prescription,
             diagnosis
         };
         medicalRecords.push_back(newRecord);
@@ -474,13 +654,13 @@ CROW_ROUTE(app, "/add_record").methods(crow::HTTPMethod::GET, crow::HTTPMethod::
         return crow::response(response);
     }
     auto body = crow::json::load(req.body);
-    if (!body || !body["patientId"] || !body["visitDate"] || !body["notes"] || !body["diagnosis"]) {
+    if (!body || !body["patientId"] || !body["visitDate"] || !body["prescription"] || !body["diagnosis"]) {
         return crow::response(400, "Missing required fields");
     }
 
     int patientId = body["patientId"].i();
     std::string visitDate = body["visitDate"].s();
-    std::string notes = body["notes"].s();
+    std::string prescription = body["prescription"].s();
     std::string diagnosis = body["diagnosis"].s();
 
     bool patientExists = false;
@@ -494,7 +674,7 @@ CROW_ROUTE(app, "/add_record").methods(crow::HTTPMethod::GET, crow::HTTPMethod::
         return crow::response(404, "Patient not found");
     }
 
-    MedicalRecord newRecord = { (int)medicalRecords.size() + 1, patientId, visitDate, notes, diagnosis };
+    MedicalRecord newRecord = { (int)medicalRecords.size() + 1, patientId, visitDate, prescription, diagnosis };
     medicalRecords.push_back(newRecord);
     saveMedicalRecordsToFile();
 
@@ -556,7 +736,7 @@ CROW_ROUTE(app, "/medical_history/<int>").methods(crow::HTTPMethod::GET)([](int 
             recordInfo["patientId"] = record.patientId;
             recordInfo["recordId"] = record.recordId;
             recordInfo["visitDate"] = record.visitDate;
-            recordInfo["notes"] = record.notes;
+            recordInfo["prescription"] = record.prescription;
             recordInfo["diagnosis"] = record.diagnosis;
             recordList.push_back(std::move(recordInfo));
         }
