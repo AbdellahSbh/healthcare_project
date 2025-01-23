@@ -9,7 +9,7 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
-// ------------------ Data Structures ------------------
+// Data Structures 
 
 // Represents a patient
 struct Patient {
@@ -86,7 +86,7 @@ struct Bill {
     std::string claimStatus; // e.g. "Pending", "Approved", "Denied"
 };
 
-// ------------------ Global Data and Mutex ------------------
+// Global Data and Mutex 
 std::vector<Patient> patients;
 std::vector<Doctor> doctors;
 std::vector<Appointment> appointments;
@@ -98,7 +98,7 @@ std::vector<InventoryItem> inventoryItems;
 std::mutex dataMutex;      // Protects patients, doctors, appointments, etc.
 std::mutex inventoryMutex; // Protects inventoryItems
 
-// ------------------ File I/O Helpers ------------------
+//  File I/O Helpers
 void saveToFile(const std::string& filename, const json& data) {
     std::ofstream file(filename, std::ios::out | std::ios::trunc);
     if (file.is_open()) {
@@ -124,7 +124,7 @@ void loadFromFile(const std::string& filename, json& data) {
     }
 }
 
-// ------------------ Load / Save Functions for each data type ------------------
+// Load / Save Functions for each data type
 
 // Patients
 void savePatientsToFile() {
@@ -415,7 +415,7 @@ void loadInventoryFromFile() {
     }
 }
 
-// ------------------ Utility Functions ------------------
+// Utility Functions 
 bool isValidAppointmentTime(const std::string& time) {
     std::regex timeRegex(R"(^([0-1][0-9]|2[0-3]):([0-5][0-9])$)");
     if (!std::regex_match(time, timeRegex)) {
@@ -461,7 +461,7 @@ void checkAndNotifyLowStock(const InventoryItem& item) {
     }
 }
 
-// ------------------ Main ------------------
+// Main
 int main() {
     crow::SimpleApp app;
 
@@ -479,7 +479,6 @@ int main() {
         return "Welcome to the Healthcare System (English version, all GET methods).";
         });
 
-    // -------------------------------------------------------------------------
     // Register new patient (GET)
     // Example: /register?name=John&address=NY&medicalHistory=History&insuranceCompany=XYZ
     CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::GET)(
@@ -526,7 +525,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // Book appointment (GET)
     // Example: /book_appointment?patientId=1&doctorId=1&date=2025-01-02&time=09:00
     CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::GET)(
@@ -621,7 +619,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // View details of a single patient by ID (GET)
     // example: /patients/1
     CROW_ROUTE(app, "/patients/<int>").methods(crow::HTTPMethod::GET)(
@@ -672,7 +669,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // View all patients (GET)
     CROW_ROUTE(app, "/patients").methods(crow::HTTPMethod::GET)(
         []() {
@@ -718,7 +714,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // View appointments (GET)
     // optional param: ?patientId=<id> to filter
     CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)(
@@ -743,7 +738,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // Register a new doctor (GET)
     // Example: /register_doctor?name=DrSmith&specialty=Surgery&contactInfo=123456
     CROW_ROUTE(app, "/register_doctor").methods(crow::HTTPMethod::GET)(
@@ -778,7 +772,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // Add medical record (GET)
     // Example: /add_medical_record?patientId=1&doctorId=1&diagnosis=Flu&notes=Test
     CROW_ROUTE(app, "/add_medical_record").methods(crow::HTTPMethod::GET)(
@@ -854,7 +847,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // View all doctors (GET)
     CROW_ROUTE(app, "/doctors").methods(crow::HTTPMethod::GET)(
         []() {
@@ -872,7 +864,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // Add Prescription (multiple items) (GET)
     // Example:
     // /add_prescription?patientId=1&doctorId=1&datePrescribed=2025-01-02&instructions=TakeAfterMeal&itemsUsed=Bandage,10;Syringe,5;MedicationX,2
@@ -1042,7 +1033,6 @@ int main() {
             }
         });
 
-    // -------------------------------------------------------------------------
     // View all bills (GET)
     CROW_ROUTE(app, "/bills").methods(crow::HTTPMethod::GET)(
         []() {
@@ -1067,7 +1057,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // Update a bill (GET)
     // Example: /update_bill?billId=1&medicationFee=10.0&consultationFee=20.0&surgeryFee=0.0
     CROW_ROUTE(app, "/update_bill").methods(crow::HTTPMethod::GET)(
@@ -1111,7 +1100,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // View medical records for a patient
     // Example: /medical_record/1
     CROW_ROUTE(app, "/medical_record/<int>").methods(crow::HTTPMethod::GET)(
@@ -1140,7 +1128,6 @@ int main() {
             return crow::response(response);
         });
 
-    // -------------------------------------------------------------------------
     // Submit insurance claim (GET)
     // Example: /submit_claim?billId=1
     CROW_ROUTE(app, "/submit_claim").methods(crow::HTTPMethod::GET)(
@@ -1178,7 +1165,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // ------------------- Inventory Management -------------------
     // View the entire inventory (GET)
     // Example: /inventory
     CROW_ROUTE(app, "/inventory").methods(crow::HTTPMethod::GET)(
@@ -1201,7 +1187,6 @@ int main() {
             return crow::response(resp);
         });
 
-    // -------------------------------------------------------------------------
     // Manually update or create an inventory item (GET)
     // Example: /update_inventory_item?itemName=Bandage&quantity=500
     CROW_ROUTE(app, "/update_inventory_item").methods(crow::HTTPMethod::GET)(
