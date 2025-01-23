@@ -224,6 +224,28 @@ void saveAppointmentsToFile() {
     saveToFile("appointments.json", arr);
 }
 
+void checkAndNotifyLowStock(const std::string& itemName, int quantity, sqlite3* db) {
+    if (quantity < 10) {
+        std::string message = "Low stock warning: " + itemName +
+                              " has only " + std::to_string(quantity) + " items left.";
+
+        // Insert into the Notifications table
+        std::string query = "INSERT INTO Notifications (itemName, message) VALUES (?, ?)";
+        sqlite3_stmt* stmt;
+
+        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, itemName.c_str(), -1, SQLITE_STATIC);
+            sqlite3_bind_text(stmt, 2, message.c_str(), -1, SQLITE_STATIC);
+
+            if (sqlite3_step(stmt) == SQLITE_DONE) {
+                std::cout << "Notification saved: " << message << std::endl;
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+}
+
+
 void loadAppointmentsFromFile() {
     ensureFileExists("appointments.json");
     json arr;
@@ -919,30 +941,31 @@ CROW_ROUTE(app, "/approve_insurance").methods(crow::HTTPMethod::GET)([&db](const
     resp["billId"] = billId;
     return crow::response(resp);
 });
+
+
 CROW_ROUTE(app, "/inventory").methods(crow::HTTPMethod::GET)([&db]() {
-    crow::json::wvalue resp;
-    std::vector<crow::json::wvalue> arr;
-
-    std::string query = "SELECT id, itemName, quantity FROM Inventory";
+    std::string query = "SELECT * FROM Inventory";
     sqlite3_stmt* stmt;
+    crow::json::wvalue resp;
+    std::vector<crow::json::wvalue> items;
 
-    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        return crow::response(500, "Failed to prepare statement");
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            crow::json::wvalue item;
+            item["id"] = sqlite3_column_int(stmt, 0);
+            item["itemName"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            item["quantity"] = sqlite3_column_int(stmt, 2);
+            items.push_back(std::move(item));
+        }
+        sqlite3_finalize(stmt);
+    } else {
+        return crow::response(500, "Failed to fetch inventory");
     }
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        crow::json::wvalue temp;
-        temp["itemId"] = sqlite3_column_int(stmt, 0);
-        temp["itemName"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        temp["quantity"] = sqlite3_column_int(stmt, 2);
-        arr.push_back(std::move(temp));
-    }
-
-    sqlite3_finalize(stmt);
-
-    resp["inventory"] = std::move(arr);
+    resp["inventory"] = std::move(items);
     return crow::response(resp);
 });
+
 CROW_ROUTE(app, "/update_inventory_item").methods(crow::HTTPMethod::GET)([&db](const crow::request& req) {
     auto qs = req.url_params;
     const char* itemName = qs.get("itemName");
@@ -957,50 +980,76 @@ CROW_ROUTE(app, "/update_inventory_item").methods(crow::HTTPMethod::GET)([&db](c
         return crow::response(400, "Quantity cannot be negative");
     }
 
-    // Check if the item exists
-    std::string query = "SELECT id FROM Inventory WHERE itemName = ?";
+    bool isUpdated = false;
     sqlite3_stmt* stmt;
+
+    // Check if the item exists
+    std::string query = "SELECT quantity FROM Inventory WHERE itemName = ?";
     if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
         return crow::response(500, "Failed to prepare statement");
     }
-
     sqlite3_bind_text(stmt, 1, itemName, -1, SQLITE_STATIC);
-    bool itemExists = sqlite3_step(stmt) == SQLITE_ROW;
+
+    bool exists = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        exists = true;
+    }
     sqlite3_finalize(stmt);
 
-    if (itemExists) {
-        // Update the item
+    if (exists) {
+        // Update the existing item
         query = "UPDATE Inventory SET quantity = ? WHERE itemName = ?";
-    } else {
-        // Insert the new item
-        query = "INSERT INTO Inventory (itemName, quantity) VALUES (?, ?)";
-    }
-
-    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        return crow::response(500, "Failed to prepare statement");
-    }
-
-    if (itemExists) {
+        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            return crow::response(500, "Failed to prepare statement");
+        }
         sqlite3_bind_int(stmt, 1, newQuantity);
         sqlite3_bind_text(stmt, 2, itemName, -1, SQLITE_STATIC);
+
+        if (sqlite3_step(stmt) == SQLITE_DONE) {
+            isUpdated = true;
+        }
+        sqlite3_finalize(stmt);
     } else {
+        // Add the new item
+        query = "INSERT INTO Inventory (itemName, quantity) VALUES (?, ?)";
+        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            return crow::response(500, "Failed to prepare statement");
+        }
         sqlite3_bind_text(stmt, 1, itemName, -1, SQLITE_STATIC);
         sqlite3_bind_int(stmt, 2, newQuantity);
-    }
 
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        if (sqlite3_step(stmt) == SQLITE_DONE) {
+            isUpdated = true;
+        }
         sqlite3_finalize(stmt);
-        return crow::response(500, "Failed to execute statement");
     }
 
-    sqlite3_finalize(stmt);
+    // Generate a low-stock notification if quantity < 10
+    if (newQuantity < 10) {
+        query = "INSERT INTO Notifications (itemName, message) VALUES (?, ?)";
+        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            return crow::response(500, "Failed to prepare notification statement");
+        }
+        std::string message = "Low stock warning: " + std::string(itemName) + " has only " + std::to_string(newQuantity) + " items left. Please add stock ";
+        sqlite3_bind_text(stmt, 1, itemName, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, message.c_str(), -1, SQLITE_STATIC);
+
+        if (sqlite3_step(stmt) != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            return crow::response(500, "Failed to insert notification");
+        }
+        sqlite3_finalize(stmt);
+    }
 
     crow::json::wvalue resp;
-    resp["message"] = itemExists ? "Inventory updated successfully" : "Item added successfully";
+    resp["message"] = "Inventory updated successfully";
     resp["itemName"] = itemName;
     resp["quantity"] = newQuantity;
+
     return crow::response(resp);
 });
+
+
 
 
 
