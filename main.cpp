@@ -5,10 +5,14 @@
 #include <regex>
 #include <mutex>
 #include <sstream>
+#include <exception>
+#include <iostream>
 #include <fstream>
 #include <algorithm> // std::find_if
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
+
+
 
 sqlite3* initDatabase(const std::string& dbPath, const std::string& schemaPath) {
     sqlite3* db;
@@ -42,6 +46,7 @@ sqlite3* initDatabase(const std::string& dbPath, const std::string& schemaPath) 
     std::cout << "Database initialized successfully with schema." << std::endl;
     return db;
 }
+
 
 
 
@@ -402,7 +407,7 @@ bool isAppointmentSlotTaken(int doctorId, const std::string& date, const std::st
 
 int main() {
     crow::SimpleApp app;
-    
+
     sqlite3* db = nullptr;
     try {
         db = initDatabase("healthcare.db", "database.sql");
@@ -426,279 +431,239 @@ int main() {
 
     //  Register new patient
     // Example: /register?name=John&address=NY&medicalHistory=SomeHistory&insuranceCompany=XYZ
-    CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* name = qs.get("name");
-        const char* address = qs.get("address");
-        const char* medicalHistory = qs.get("medicalHistory");
-        const char* insuranceCompany = qs.get("insuranceCompany"); // optional
+   CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::GET)([&db](const crow::request& req) {
+    auto qs = req.url_params;
 
-        if (!name || !address || !medicalHistory) {
-            return crow::response(400, "Missing required parameters: name, address, medicalHistory");
-        }
+    const char* name = qs.get("name");
+    const char* address = qs.get("address");
+    const char* medicalHistory = qs.get("medicalHistory");
+    const char* insuranceCompany = qs.get("insuranceCompany");
 
-        bool hasInsurance = false;
-        std::string insCompany = "";
-        if (insuranceCompany != nullptr && std::string(insuranceCompany).size() > 0) {
-            hasInsurance = true;
-            insCompany = insuranceCompany;
-        }
+    if (!name || !address || !medicalHistory) {
+        return crow::response(400, "Missing required parameters: name, address, medicalHistory");
+    }
 
-        // Create and store new patient
-        Patient newPatient;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            newPatient.id = (int)patients.size() + 1;
-        }
-        newPatient.name = name;
-        newPatient.address = address;
-        newPatient.medicalHistory = medicalHistory;
-        newPatient.hasInsurance = hasInsurance;
-        newPatient.insuranceCompany = insCompany;
+    bool hasInsurance = (insuranceCompany != nullptr); // If insuranceCompany exists, set hasInsurance to true
 
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            patients.push_back(newPatient);
-        }
-        savePatientsToFile();
+    // Insert into SQLite
+    std::string sql = "INSERT INTO Patients (name, address, medicalHistory, hasInsurance, insuranceCompany) VALUES (?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
 
-        crow::json::wvalue resp;
-        resp["message"] = "Patient registered successfully";
-        resp["patientId"] = newPatient.id;
-        resp["hasInsurance"] = newPatient.hasInsurance;
-        resp["insuranceCompany"] = newPatient.insuranceCompany;
-        return crow::response(resp);
-        });
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, address, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, medicalHistory, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 4, hasInsurance ? 1 : 0);
+    sqlite3_bind_text(stmt, 5, insuranceCompany ? insuranceCompany : "", -1, SQLITE_STATIC);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return crow::response(500, "Failed to execute statement");
+    }
+
+    int id = sqlite3_last_insert_rowid(db);
+    sqlite3_finalize(stmt);
+
+    crow::json::wvalue resp;
+    resp["message"] = "Patient registered successfully";
+    resp["id"] = id;
+    return crow::response(resp);
+});
+
 
     // Book appointment 
     // Example:
     // /book_appointment?patientId=1&doctorId=1&date=2025-01-02&time=09:00
     // After booking, automatically add a Bill (with 0 fees) create or update a medicalRecord for the patient's appointment history
-    CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* patientIdStr = qs.get("patientId");
-        const char* doctorIdStr = qs.get("doctorId");
-        const char* date = qs.get("date");
-        const char* time = qs.get("time");
+ CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::GET)([&db](const crow::request& req) {
+    auto qs = req.url_params;
+    const char* patientIdStr = qs.get("patientId");
+    const char* doctorIdStr = qs.get("doctorId");
+    const char* date = qs.get("date");
+    const char* time = qs.get("time");
 
-        if (!patientIdStr || !doctorIdStr || !date || !time) {
-            return crow::response(400, "Missing required parameters: patientId, doctorId, date, time");
-        }
+    if (!patientIdStr || !doctorIdStr || !date || !time) {
+        return crow::response(400, "Missing required parameters: patientId, doctorId, date, time");
+    }
 
-        int patientId = std::atoi(patientIdStr);
-        int doctorId = std::atoi(doctorIdStr);
+    int patientId = std::atoi(patientIdStr);
+    int doctorId = std::atoi(doctorIdStr);
 
-        // Validate patient
-        auto patientIt = std::find_if(patients.begin(), patients.end(), [&](const Patient& p) {
-            return p.id == patientId;
-            });
-        if (patientIt == patients.end()) {
-            return crow::response(404, "Patient not found");
-        }
+    // Insert appointment
+    std::string insertAppointment = "INSERT INTO Appointments (patientId, doctorId, date, time) VALUES (?, ?, ?, ?)";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, insertAppointment.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare appointment statement");
+    }
+    sqlite3_bind_int(stmt, 1, patientId);
+    sqlite3_bind_int(stmt, 2, doctorId);
+    sqlite3_bind_text(stmt, 3, date, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, time, -1, SQLITE_STATIC);
 
-        // Validate doctor
-        auto doctorIt = std::find_if(doctors.begin(), doctors.end(), [&](const Doctor& d) {
-            return d.id == doctorId;
-            });
-        if (doctorIt == doctors.end()) {
-            return crow::response(404, "Doctor not found");
-        }
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return crow::response(500, "Failed to execute appointment statement");
+    }
+    int appointmentId = sqlite3_last_insert_rowid(db);
+    sqlite3_finalize(stmt);
 
-        // Validate date/time
-        std::string dateStr(date);
-        std::string timeStr(time);
-        if (!isValidDate(dateStr)) {
-            return crow::response(400, "Invalid date format (YYYY-MM-DD)");
-        }
-        if (!isValidAppointmentTime(timeStr)) {
-            return crow::response(400, "Invalid time (09:00 ~ 17:00, 10-min increments)");
-        }
+    // Insert bill
+    std::string insertBill = "INSERT INTO Bills (patientId, appointmentId, isInsured) VALUES (?, ?, ?)";
+    if (sqlite3_prepare_v2(db, insertBill.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare bill statement");
+    }
+    sqlite3_bind_int(stmt, 1, patientId);
+    sqlite3_bind_int(stmt, 2, appointmentId);
+    sqlite3_bind_int(stmt, 3, 0);  // Example: no insurance for simplicity
 
-        // Check if slot taken
-        if (isAppointmentSlotTaken(doctorId, dateStr, timeStr)) {
-            return crow::response(400, "This slot is already taken for this doctor");
-        }
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return crow::response(500, "Failed to execute bill statement");
+    }
+    int billId = sqlite3_last_insert_rowid(db);
+    sqlite3_finalize(stmt);
 
-        // Create appointment
-        Appointment newAppt = { patientId, doctorId, dateStr, timeStr };
-        int appointmentIndex = 0;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            appointments.push_back(newAppt);
-            appointmentIndex = (int)appointments.size(); // index
-        }
-        saveAppointmentsToFile();
-
-        // Create a Bill with 0 fees
-        Bill newBill;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            newBill.billId = (int)bills.size() + 1;
-            newBill.patientId = patientId;
-            newBill.appointmentId = appointmentIndex;
-            newBill.medicationFee = 0.0;
-            newBill.consultationFee = 0.0;
-            newBill.surgeryFee = 0.0;
-            newBill.totalFee = 0.0;
-            newBill.isInsured = patientIt->hasInsurance;
-            newBill.claimed = false;
-            newBill.insuranceCompany = patientIt->insuranceCompany;
-            newBill.claimStatus = "Not Submitted";
-            bills.push_back(newBill);
-        }
-        saveBillsToFile();
-
-        // Update medical record to track this appointment
-        // We'll add a new record with the date/time and a brief note
-        {
-            MedicalRecord record;
-            {
-                std::lock_guard<std::mutex> lock(dataMutex);
-                record.recordId = (int)medicalRecords.size() + 1;
-            }
-            record.patientId = patientId;
-            record.visitDate = dateStr;
-            // We'll store appointment info in "notes"
-            record.notes = "Appointment with doctorId=" + std::to_string(doctorId)
-                + " at " + timeStr;
-            record.diagnosis = "N/A (appointment booked)";
-
-            {
-                std::lock_guard<std::mutex> lock(dataMutex);
-                medicalRecords.push_back(record);
-            }
-            saveMedicalRecordsToFile();
-        }
-
-        crow::json::wvalue resp;
-        resp["message"] = "Appointment booked successfully";
-        resp["appointment"] = {
-            {"patientId", patientId},
-            {"doctorId",  doctorId},
-            {"date", dateStr},
-            {"time", timeStr}
-        };
-        resp["bill"] = {
-            {"billId", newBill.billId},
-            {"isInsured", newBill.isInsured},
-            {"insuranceCompany", newBill.insuranceCompany},
-            {"status", newBill.claimStatus}
-        };
-        return crow::response(resp);
-        });
+    crow::json::wvalue resp;
+    resp["message"] = "Appointment and bill created successfully";
+    resp["appointmentId"] = appointmentId;
+    resp["billId"] = billId;
+    return crow::response(resp);
+});
 
 
     //  view all patients 
     // Show each patient's prescriptions in the response
 
-    CROW_ROUTE(app, "/patients").methods(crow::HTTPMethod::GET)([]() {
-        crow::json::wvalue resp;
-        std::vector<crow::json::wvalue> arr;
-        for (auto& pat : patients) {
-            crow::json::wvalue p;
-            p["id"] = pat.id;
-            p["name"] = pat.name;
-            p["address"] = pat.address;
-            p["medicalHistory"] = pat.medicalHistory;
-            p["hasInsurance"] = pat.hasInsurance;
-            p["insuranceCompany"] = pat.insuranceCompany;
+    CROW_ROUTE(app, "/patients").methods(crow::HTTPMethod::GET)([&db]() {
+    std::string query = "SELECT * FROM Patients";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
 
-            // Add this patient's prescriptions
-            std::vector<crow::json::wvalue> prescArr;
-            for (auto& pr : prescriptions) {
-                if (pr.patientId == pat.id) {
-                    crow::json::wvalue item;
-                    item["prescriptionId"] = pr.prescriptionId;
-                    item["medication"] = pr.medication;
-                    item["dosage"] = pr.dosage;
-                    item["instructions"] = pr.instructions;
-                    item["datePrescribed"] = pr.datePrescribed;
-                    prescArr.push_back(std::move(item));
-                }
-            }
-            p["prescriptions"] = std::move(prescArr);
+    crow::json::wvalue resp;
+    std::vector<crow::json::wvalue> patientsArray;
 
-            arr.push_back(std::move(p));
-        }
-        resp["patients"] = std::move(arr);
-        return crow::response(resp);
-        });
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        crow::json::wvalue patient;
+        patient["id"] = sqlite3_column_int(stmt, 0);
+        patient["name"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        patient["address"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        patient["medicalHistory"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        patient["hasInsurance"] = sqlite3_column_int(stmt, 4);
+        patient["insuranceCompany"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+
+        patientsArray.push_back(patient);
+    }
+    sqlite3_finalize(stmt);
+
+    resp["patients"] = std::move(patientsArray);
+    return crow::response(resp);
+});
+
 
 
     // view all appointments 
 
-    CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([]() {
-        crow::json::wvalue resp;
-        std::vector<crow::json::wvalue> arr;
-        for (auto& a : appointments) {
-            crow::json::wvalue item;
-            item["patientId"] = a.patientId;
-            item["doctorId"] = a.doctorId;
-            item["date"] = a.date;
-            item["time"] = a.time;
-            arr.push_back(std::move(item));
-        }
-        resp["appointments"] = std::move(arr);
-        return crow::response(resp);
-        });
+CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([&db]() {
+    std::string query = "SELECT * FROM Appointments";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+
+    crow::json::wvalue resp;
+    std::vector<crow::json::wvalue> appointmentsArray;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        crow::json::wvalue appointment;
+        appointment["id"] = sqlite3_column_int(stmt, 0);
+        appointment["patientId"] = sqlite3_column_int(stmt, 1);
+        appointment["doctorId"] = sqlite3_column_int(stmt, 2);
+        appointment["date"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        appointment["time"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        appointmentsArray.push_back(std::move(appointment));
+    }
+    sqlite3_finalize(stmt);
+
+    resp["appointments"] = std::move(appointmentsArray);
+    return crow::response(resp);
+});
+
 
 
     // Rregister a new doctor 
     // Example:
     // /register_doctor?name=DrSmith&specialty=Surgery&contactInfo=xxx
-    CROW_ROUTE(app, "/register_doctor").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* name = qs.get("name");
-        const char* specialty = qs.get("specialty");
-        const char* contactInfo = qs.get("contactInfo");
+CROW_ROUTE(app, "/register_doctor").methods(crow::HTTPMethod::GET)([&db](const crow::request& req) {
+    auto qs = req.url_params;
+    const char* name = qs.get("name");
+    const char* specialty = qs.get("specialty");
+    const char* contactInfo = qs.get("contactInfo");
 
-        if (!name || !specialty || !contactInfo) {
-            return crow::response(400, "Missing required parameters: name, specialty, contactInfo");
-        }
+    if (!name || !specialty || !contactInfo) {
+        return crow::response(400, "Missing required parameters: name, specialty, contactInfo");
+    }
 
-        Doctor d;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            d.id = (int)doctors.size() + 1;
-        }
-        d.name = name;
-        d.specialty = specialty;
-        d.contactInfo = contactInfo;
+    std::string sql = "INSERT INTO Doctors (name, specialty, contactInfo) VALUES (?, ?, ?)";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
 
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            doctors.push_back(d);
-        }
-        saveDoctorsToFile();
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, specialty, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, contactInfo, -1, SQLITE_STATIC);
 
-        crow::json::wvalue resp;
-        resp["message"] = "Doctor registered successfully";
-        resp["doctorId"] = d.id;
-        return crow::response(resp);
-        });
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return crow::response(500, "Failed to execute statement");
+    }
+
+    int id = sqlite3_last_insert_rowid(db);
+    sqlite3_finalize(stmt);
+
+    crow::json::wvalue resp;
+    resp["message"] = "Doctor registered successfully";
+    resp["id"] = id;
+    return crow::response(resp);
+});
+
+
 
     // view doctors 
 
-    CROW_ROUTE(app, "/doctors").methods(crow::HTTPMethod::GET)([]() {
-        crow::json::wvalue resp;
-        std::vector<crow::json::wvalue> arr;
-        for (auto& d : doctors) {
-            crow::json::wvalue item;
-            item["id"] = d.id;
-            item["name"] = d.name;
-            item["specialty"] = d.specialty;
-            item["contactInfo"] = d.contactInfo;
-            arr.push_back(std::move(item));
-        }
-        resp["doctors"] = std::move(arr);
-        return crow::response(resp);
-        });
+   CROW_ROUTE(app, "/doctors").methods(crow::HTTPMethod::GET)([&db]() {
+    std::string query = "SELECT * FROM Doctors";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+
+    crow::json::wvalue resp;
+    std::vector<crow::json::wvalue> doctorsArray;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        crow::json::wvalue doctor;
+        doctor["id"] = sqlite3_column_int(stmt, 0);
+        doctor["name"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        doctor["specialty"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        doctor["contactInfo"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        doctorsArray.push_back(std::move(doctor));
+    }
+    sqlite3_finalize(stmt);
+
+    resp["doctors"] = std::move(doctorsArray);
+    return crow::response(resp);
+});
 
 
     // Add prescription 
     // Example:
     // /add_prescription?patientId=1&doctorId=1&medication=ABC&dosage=1tablet&instructions=AfterMeal&datePrescribed=2025-01-02
-    CROW_ROUTE(app, "/add_prescription").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
+    CROW_ROUTE(app, "/add_prescription").methods(crow::HTTPMethod::GET)([&db](const crow::request& req) {
     auto qs = req.url_params;
     const char* patientIdStr = qs.get("patientId");
     const char* doctorIdStr = qs.get("doctorId");
@@ -707,8 +672,7 @@ int main() {
     const char* instructions = qs.get("instructions");
     const char* datePrescribed = qs.get("datePrescribed");
 
-    if (!patientIdStr || !doctorIdStr || !medication || !dosage
-        || !instructions || !datePrescribed) {
+    if (!patientIdStr || !doctorIdStr || !medication || !dosage || !instructions || !datePrescribed) {
         return crow::response(400, "Missing required parameters");
     }
 
@@ -716,199 +680,329 @@ int main() {
     int doctorId = std::atoi(doctorIdStr);
 
     // Validate patient
-    bool patientFound = false;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex);
-        for (auto& p : patients) {
-            if (p.id == patientId) {
-                patientFound = true;
-                break;
-            }
-        }
+    std::string checkPatient = "SELECT id FROM Patients WHERE id = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, checkPatient.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare patient check statement");
     }
-    if (!patientFound) {
+    sqlite3_bind_int(stmt, 1, patientId);
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
         return crow::response(404, "Patient not found");
     }
+    sqlite3_finalize(stmt);
 
     // Validate doctor
-    bool doctorFound = false;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex);
-        for (auto& d : doctors) {
-            if (d.id == doctorId) {
-                doctorFound = true;
-                break;
-            }
-        }
+    std::string checkDoctor = "SELECT id FROM Doctors WHERE id = ?";
+    if (sqlite3_prepare_v2(db, checkDoctor.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare doctor check statement");
     }
-    if (!doctorFound) {
+    sqlite3_bind_int(stmt, 1, doctorId);
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
         return crow::response(404, "Doctor not found");
     }
+    sqlite3_finalize(stmt);
 
-    if (!isValidDate(datePrescribed)) {
-        return crow::response(400, "Invalid date format for datePrescribed");
+    // Insert prescription
+    std::string sql = "INSERT INTO Prescriptions (patientId, doctorId, medication, dosage, instructions, datePrescribed) VALUES (?, ?, ?, ?, ?, ?)";
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare prescription statement");
     }
 
-    Prescription newPres;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex);
-        newPres.prescriptionId = (int)prescriptions.size() + 1;
-    }
-    newPres.patientId = patientId;
-    newPres.doctorId = doctorId;
-    newPres.medication = medication;
-    newPres.dosage = dosage;
-    newPres.instructions = instructions;
-    newPres.datePrescribed = datePrescribed;
+    sqlite3_bind_int(stmt, 1, patientId);
+    sqlite3_bind_int(stmt, 2, doctorId);
+    sqlite3_bind_text(stmt, 3, medication, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, dosage, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 5, instructions, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 6, datePrescribed, -1, SQLITE_STATIC);
 
-    {
-        std::lock_guard<std::mutex> lock(dataMutex);
-        prescriptions.push_back(newPres);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return crow::response(500, "Failed to execute prescription statement");
     }
-    savePrescriptionsToFile();
+
+    int prescriptionId = sqlite3_last_insert_rowid(db);
+    sqlite3_finalize(stmt);
 
     crow::json::wvalue resp;
     resp["message"] = "Prescription added successfully";
-    resp["prescriptionId"] = newPres.prescriptionId;
+    resp["prescriptionId"] = prescriptionId;
+    return crow::response(resp);
+});
+
+    //  View /bills (GET)
+CROW_ROUTE(app, "/bills").methods(crow::HTTPMethod::GET)([&db]() {
+    std::string sql = "SELECT * FROM Bills";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+
+    crow::json::wvalue resp;
+    std::vector<crow::json::wvalue> bills;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        crow::json::wvalue bill;
+        bill["id"] = sqlite3_column_int(stmt, 0);
+        bill["patientId"] = sqlite3_column_int(stmt, 1);
+        bill["appointmentId"] = sqlite3_column_int(stmt, 2);
+        bill["medicationFee"] = sqlite3_column_double(stmt, 3);
+        bill["consultationFee"] = sqlite3_column_double(stmt, 4);
+        bill["surgeryFee"] = sqlite3_column_double(stmt, 5);
+        bill["totalFee"] = sqlite3_column_double(stmt, 6);
+        bill["isInsured"] = sqlite3_column_int(stmt, 7);
+        bill["claimed"] = sqlite3_column_int(stmt, 8);
+        bill["insuranceCompany"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
+        bill["claimStatus"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
+        bills.push_back(std::move(bill));
+    }
+    sqlite3_finalize(stmt);
+
+    resp["bills"] = std::move(bills);
     return crow::response(resp);
 });
 
 
-    //  View /bills (GET)
-
-    CROW_ROUTE(app, "/bills").methods(crow::HTTPMethod::GET)([]() {
-        crow::json::wvalue resp;
-        std::vector<crow::json::wvalue> arr;
-        for (auto& b : bills) {
-            crow::json::wvalue item;
-            item["billId"] = b.billId;
-            item["patientId"] = b.patientId;
-            item["appointmentId"] = b.appointmentId;
-            item["medicationFee"] = b.medicationFee;
-            item["consultationFee"] = b.consultationFee;
-            item["surgeryFee"] = b.surgeryFee;
-            item["totalFee"] = b.totalFee;
-            item["isInsured"] = b.isInsured;
-            item["claimed"] = b.claimed;
-            item["insuranceCompany"] = b.insuranceCompany;
-            item["claimStatus"] = b.claimStatus;
-            arr.push_back(std::move(item));
-        }
-        resp["bills"] = std::move(arr);
-        return crow::response(resp);
-        });
 
     // Example:
     // /update_bill?billId=1&medicationFee=10.0&consultationFee=20.0&surgeryFee=0.0
-    CROW_ROUTE(app, "/update_bill").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* billIdStr = qs.get("billId");
-        const char* medicationFeeStr = qs.get("medicationFee");
-        const char* consultationFeeStr = qs.get("consultationFee");
-        const char* surgeryFeeStr = qs.get("surgeryFee");
+ CROW_ROUTE(app, "/update_bill").methods(crow::HTTPMethod::GET)([&db](const crow::request& req) {
+    auto qs = req.url_params;
+    const char* billIdStr = qs.get("billId");
+    const char* medicationFeeStr = qs.get("medicationFee");
+    const char* consultationFeeStr = qs.get("consultationFee");
+    const char* surgeryFeeStr = qs.get("surgeryFee");
 
-        if (!billIdStr) {
-            return crow::response(400, "Missing required parameter: billId");
-        }
-        int billId = std::atoi(billIdStr);
+    if (!billIdStr || !medicationFeeStr || !consultationFeeStr || !surgeryFeeStr) {
+        return crow::response(400, "Missing required parameters");
+    }
 
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(bills.begin(), bills.end(), [&](const Bill& b) {
-            return b.billId == billId;
-            });
-        if (it == bills.end()) {
-            return crow::response(404, "Bill not found");
-        }
+    int billId = std::atoi(billIdStr);
+    double medicationFee = std::atof(medicationFeeStr);
+    double consultationFee = std::atof(consultationFeeStr);
+    double surgeryFee = std::atof(surgeryFeeStr);
+    double totalFee = medicationFee + consultationFee + surgeryFee;
 
-        if (medicationFeeStr) {
-            it->medicationFee = std::atof(medicationFeeStr);
-        }
-        if (consultationFeeStr) {
-            it->consultationFee = std::atof(consultationFeeStr);
-        }
-        if (surgeryFeeStr) {
-            it->surgeryFee = std::atof(surgeryFeeStr);
-        }
+    std::string query = "UPDATE Bills SET medicationFee = ?, consultationFee = ?, surgeryFee = ?, totalFee = ? WHERE id = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
 
-        it->totalFee = it->medicationFee + it->consultationFee + it->surgeryFee;
-        saveBillsToFile();
+    sqlite3_bind_double(stmt, 1, medicationFee);
+    sqlite3_bind_double(stmt, 2, consultationFee);
+    sqlite3_bind_double(stmt, 3, surgeryFee);
+    sqlite3_bind_double(stmt, 4, totalFee);
+    sqlite3_bind_int(stmt, 5, billId);
 
-        crow::json::wvalue resp;
-        resp["message"] = "Bill updated successfully";
-        resp["billId"] = it->billId;
-        resp["totalFee"] = it->totalFee;
-        return crow::response(resp);
-        });
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return crow::response(500, "Failed to update bill");
+    }
+    sqlite3_finalize(stmt);
+
+    crow::json::wvalue resp;
+    resp["message"] = "Bill updated successfully";
+    resp["billId"] = billId;
+    resp["totalFee"] = totalFee;
+    return crow::response(resp);
+});
+
 
     // Example:
     // /ask_for_billing?billId=1
-    CROW_ROUTE(app, "/ask_for_billing").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* billIdStr = qs.get("billId");
-        if (!billIdStr) {
-            return crow::response(400, "Missing required parameter: billId");
-        }
-        int billId = std::atoi(billIdStr);
-
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(bills.begin(), bills.end(), [&](const Bill& b) {
-            return b.billId == billId;
-            });
-        if (it == bills.end()) {
-            return crow::response(404, "Bill not found");
-        }
-
-        if (!it->isInsured) {
-            return crow::response(400, "This bill is not for an insured patient");
-        }
-        if (it->claimed) {
-            return crow::response(400, "This bill has already been taken");
-        }
-
-        it->claimed = true;
-        it->claimStatus = "Pending";
-        saveBillsToFile();
-
-        crow::json::wvalue resp;
-        resp["message"] = "Insurance is submitted";
-        resp["billId"] = it->billId;
-        resp["claimStatus"] = it->claimStatus;
-        return crow::response(resp);
-        });
-        // Approve Claim
-// Example: /approve_insurance?billId=1
-CROW_ROUTE(app, "/approve_insurance").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
+ CROW_ROUTE(app, "/ask_for_billing").methods(crow::HTTPMethod::GET)([&db](const crow::request& req) {
     auto qs = req.url_params;
     const char* billIdStr = qs.get("billId");
+
     if (!billIdStr) {
         return crow::response(400, "Missing required parameter: billId");
     }
+
     int billId = std::atoi(billIdStr);
 
-    std::lock_guard<std::mutex> lock(dataMutex);
-    auto it = std::find_if(bills.begin(), bills.end(), [&](const Bill& b) {
-        return b.billId == billId;
-    });
-    if (it == bills.end()) {
+    // Verify if the bill exists and is insured
+    std::string query = "SELECT isInsured, claimed FROM Bills WHERE id = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+    sqlite3_bind_int(stmt, 1, billId);
+
+    bool isInsured = false, alreadyClaimed = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        isInsured = sqlite3_column_int(stmt, 0) != 0;
+        alreadyClaimed = sqlite3_column_int(stmt, 1) != 0;
+    } else {
+        sqlite3_finalize(stmt);
         return crow::response(404, "Bill not found");
     }
+    sqlite3_finalize(stmt);
 
-    if (!it->isInsured) {
+    if (!isInsured) {
         return crow::response(400, "This bill is not for an insured patient");
     }
-    if (it->claimStatus != "Pending") {
+    if (alreadyClaimed) {
+        return crow::response(400, "This bill has already been claimed");
+    }
+
+    // Update bill to mark it as claimed
+    query = "UPDATE Bills SET claimed = 1, claimStatus = 'Pending' WHERE id = ?";
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+    sqlite3_bind_int(stmt, 1, billId);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return crow::response(500, "Failed to update claim status");
+    }
+    sqlite3_finalize(stmt);
+
+    crow::json::wvalue resp;
+    resp["message"] = "Insurance claim submitted";
+    resp["billId"] = billId;
+    resp["claimStatus"] = "Pending";
+    return crow::response(resp);
+});
+
+
+        // Approve Claim
+// Example: /approve_insurance?billId=1
+CROW_ROUTE(app, "/approve_insurance").methods(crow::HTTPMethod::GET)([&db](const crow::request& req) {
+    auto qs = req.url_params;
+    const char* billIdStr = qs.get("billId");
+
+    if (!billIdStr) {
+        return crow::response(400, "Missing required parameter: billId");
+    }
+
+    int billId = std::atoi(billIdStr);
+
+    // Verify if the bill exists and has a pending claim
+    std::string query = "SELECT claimStatus FROM Bills WHERE id = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+    sqlite3_bind_int(stmt, 1, billId);
+
+    std::string claimStatus;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        claimStatus = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+    } else {
+        sqlite3_finalize(stmt);
+        return crow::response(404, "Bill not found");
+    }
+    sqlite3_finalize(stmt);
+
+    if (claimStatus != "Pending") {
         return crow::response(400, "Claim is not in a pending state");
     }
 
-    it->claimStatus = "Approved";
-    saveBillsToFile();
+    // Update bill to mark it as approved
+    query = "UPDATE Bills SET claimStatus = 'Approved' WHERE id = ?";
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+    sqlite3_bind_int(stmt, 1, billId);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return crow::response(500, "Failed to update claim status");
+    }
+    sqlite3_finalize(stmt);
 
     crow::json::wvalue resp;
     resp["message"] = "Claim approved successfully";
-    resp["billId"] = it->billId;
-    resp["claimStatus"] = it->claimStatus;
+    resp["billId"] = billId;
     return crow::response(resp);
 });
+CROW_ROUTE(app, "/inventory").methods(crow::HTTPMethod::GET)([&db]() {
+    crow::json::wvalue resp;
+    std::vector<crow::json::wvalue> arr;
+
+    std::string query = "SELECT id, itemName, quantity FROM Inventory";
+    sqlite3_stmt* stmt;
+
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        crow::json::wvalue temp;
+        temp["itemId"] = sqlite3_column_int(stmt, 0);
+        temp["itemName"] = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        temp["quantity"] = sqlite3_column_int(stmt, 2);
+        arr.push_back(std::move(temp));
+    }
+
+    sqlite3_finalize(stmt);
+
+    resp["inventory"] = std::move(arr);
+    return crow::response(resp);
+});
+CROW_ROUTE(app, "/update_inventory_item").methods(crow::HTTPMethod::GET)([&db](const crow::request& req) {
+    auto qs = req.url_params;
+    const char* itemName = qs.get("itemName");
+    const char* quantityStr = qs.get("quantity");
+
+    if (!itemName || !quantityStr) {
+        return crow::response(400, "Missing 'itemName' or 'quantity'");
+    }
+
+    int newQuantity = std::atoi(quantityStr);
+    if (newQuantity < 0) {
+        return crow::response(400, "Quantity cannot be negative");
+    }
+
+    // Check if the item exists
+    std::string query = "SELECT id FROM Inventory WHERE itemName = ?";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+
+    sqlite3_bind_text(stmt, 1, itemName, -1, SQLITE_STATIC);
+    bool itemExists = sqlite3_step(stmt) == SQLITE_ROW;
+    sqlite3_finalize(stmt);
+
+    if (itemExists) {
+        // Update the item
+        query = "UPDATE Inventory SET quantity = ? WHERE itemName = ?";
+    } else {
+        // Insert the new item
+        query = "INSERT INTO Inventory (itemName, quantity) VALUES (?, ?)";
+    }
+
+    if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        return crow::response(500, "Failed to prepare statement");
+    }
+
+    if (itemExists) {
+        sqlite3_bind_int(stmt, 1, newQuantity);
+        sqlite3_bind_text(stmt, 2, itemName, -1, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_text(stmt, 1, itemName, -1, SQLITE_STATIC);
+        sqlite3_bind_int(stmt, 2, newQuantity);
+    }
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return crow::response(500, "Failed to execute statement");
+    }
+
+    sqlite3_finalize(stmt);
+
+    crow::json::wvalue resp;
+    resp["message"] = itemExists ? "Inventory updated successfully" : "Item added successfully";
+    resp["itemName"] = itemName;
+    resp["quantity"] = newQuantity;
+    return crow::response(resp);
+});
+
+
 
 
     // Start server on port 8080
