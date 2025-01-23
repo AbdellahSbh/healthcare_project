@@ -9,7 +9,9 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
-//Data Structures
+// ------------------ Data Structures ------------------
+
+// Represents a patient
 struct Patient {
     int id;
     std::string name;
@@ -19,6 +21,7 @@ struct Patient {
     std::string insuranceCompany;
 };
 
+// Represents a doctor
 struct Doctor {
     int id;
     std::string name;
@@ -26,6 +29,7 @@ struct Doctor {
     std::string contactInfo;
 };
 
+// Represents an appointment
 struct Appointment {
     int patientId;
     int doctorId;
@@ -33,6 +37,7 @@ struct Appointment {
     std::string time;  // HH:MM
 };
 
+// Represents a medical record
 struct MedicalRecord {
     int recordId;
     int patientId;
@@ -42,16 +47,31 @@ struct MedicalRecord {
     std::string diagnosis;
 };
 
+// Represents an inventory item (e.g., medication, bandage, syringe, etc.)
+struct InventoryItem {
+    int itemId;
+    std::string itemName;
+    int quantity;
+};
+
+// Represents an item used in the prescription
+struct PrescriptionItem {
+    std::string itemName;
+    int usedAmount;
+};
+
+// Represents a prescription (which may contain multiple items used)
 struct Prescription {
     int prescriptionId;
     int patientId;
     int doctorId;
-    std::string medication;
-    std::string dosage;
-    std::string instructions;
     std::string datePrescribed; // YYYY-MM-DD
+    std::string instructions;   // general instructions
+    // multiple items used in this prescription
+    std::vector<PrescriptionItem> itemsUsed;
 };
 
+// Represents a bill
 struct Bill {
     int billId;
     int patientId;
@@ -66,16 +86,19 @@ struct Bill {
     std::string claimStatus; // e.g. "Pending", "Approved", "Denied"
 };
 
-//Global Data and Mutex
+// ------------------ Global Data and Mutex ------------------
 std::vector<Patient> patients;
 std::vector<Doctor> doctors;
 std::vector<Appointment> appointments;
 std::vector<MedicalRecord> medicalRecords;
-std::vector<Prescription> prescriptions;
+std::vector<Prescription> prescriptions;  // Updated: each prescription can include multiple items
 std::vector<Bill> bills;
-std::mutex dataMutex;
+std::vector<InventoryItem> inventoryItems;
 
-//File Operations
+std::mutex dataMutex;      // Protects patients, doctors, appointments, etc.
+std::mutex inventoryMutex; // Protects inventoryItems
+
+// ------------------ File I/O Helpers ------------------
 void saveToFile(const std::string& filename, const json& data) {
     std::ofstream file(filename, std::ios::out | std::ios::trunc);
     if (file.is_open()) {
@@ -101,7 +124,9 @@ void loadFromFile(const std::string& filename, json& data) {
     }
 }
 
-//Load / Save Functions 
+// ------------------ Load / Save Functions for each data type ------------------
+
+// Patients
 void savePatientsToFile() {
     json arr = json::array();
     for (auto& p : patients) {
@@ -139,6 +164,7 @@ void loadPatientsFromFile() {
     }
 }
 
+// Doctors
 void saveDoctorsToFile() {
     json arr = json::array();
     for (auto& d : doctors) {
@@ -171,6 +197,7 @@ void loadDoctorsFromFile() {
     }
 }
 
+// Appointments
 void saveAppointmentsToFile() {
     json arr = json::array();
     for (auto& a : appointments) {
@@ -203,6 +230,7 @@ void loadAppointmentsFromFile() {
     }
 }
 
+// MedicalRecords
 void saveMedicalRecordsToFile() {
     json arr = json::array();
     for (auto& r : medicalRecords) {
@@ -224,9 +252,9 @@ void loadMedicalRecordsFromFile() {
     loadFromFile("medical_records.json", arr);
 
     for (auto& item : arr) {
-        if (!item.contains("recordId") || !item.contains("patientId") || !item.contains("doctorId") ||
-            !item.contains("visitDate") || !item.contains("notes") ||
-            !item.contains("diagnosis")) {
+        if (!item.contains("recordId") || !item.contains("patientId") ||
+            !item.contains("doctorId") || !item.contains("visitDate") ||
+            !item.contains("notes") || !item.contains("diagnosis")) {
             continue;
         }
         MedicalRecord r;
@@ -240,17 +268,26 @@ void loadMedicalRecordsFromFile() {
     }
 }
 
+// Prescriptions
 void savePrescriptionsToFile() {
     json arr = json::array();
     for (auto& p : prescriptions) {
+        // Convert itemsUsed to JSON array
+        json itemsArr = json::array();
+        for (auto& used : p.itemsUsed) {
+            itemsArr.push_back({
+                {"itemName", used.itemName},
+                {"usedAmount", used.usedAmount}
+                });
+        }
+
         arr.push_back({
             {"prescriptionId", p.prescriptionId},
             {"patientId", p.patientId},
             {"doctorId", p.doctorId},
-            {"medication", p.medication},
-            {"dosage", p.dosage},
+            {"datePrescribed", p.datePrescribed},
             {"instructions", p.instructions},
-            {"datePrescribed", p.datePrescribed}
+            {"itemsUsed", itemsArr}
             });
     }
     saveToFile("prescriptions.json", arr);
@@ -263,23 +300,33 @@ void loadPrescriptionsFromFile() {
 
     for (auto& item : arr) {
         if (!item.contains("prescriptionId") || !item.contains("patientId") ||
-            !item.contains("doctorId") || !item.contains("medication") ||
-            !item.contains("dosage") || !item.contains("instructions") ||
-            !item.contains("datePrescribed")) {
+            !item.contains("doctorId") || !item.contains("datePrescribed") ||
+            !item.contains("instructions") || !item.contains("itemsUsed")) {
             continue;
         }
         Prescription p;
         p.prescriptionId = item["prescriptionId"].get<int>();
         p.patientId = item["patientId"].get<int>();
         p.doctorId = item["doctorId"].get<int>();
-        p.medication = item["medication"].get<std::string>();
-        p.dosage = item["dosage"].get<std::string>();
-        p.instructions = item["instructions"].get<std::string>();
         p.datePrescribed = item["datePrescribed"].get<std::string>();
+        p.instructions = item["instructions"].get<std::string>();
+
+        // Parse itemsUsed
+        auto itemsArr = item["itemsUsed"];
+        for (auto& usedItem : itemsArr) {
+            if (!usedItem.contains("itemName") || !usedItem.contains("usedAmount")) {
+                continue;
+            }
+            PrescriptionItem pi;
+            pi.itemName = usedItem["itemName"].get<std::string>();
+            pi.usedAmount = usedItem["usedAmount"].get<int>();
+            p.itemsUsed.push_back(pi);
+        }
         prescriptions.push_back(p);
     }
 }
 
+// Bills
 void saveBillsToFile() {
     json arr = json::array();
     for (auto& b : bills) {
@@ -330,6 +377,44 @@ void loadBillsFromFile() {
     }
 }
 
+// Inventory
+void saveInventoryToFile() {
+    json arr = json::array();
+    {
+        std::lock_guard<std::mutex> lock(inventoryMutex);
+        for (auto& item : inventoryItems) {
+            arr.push_back({
+                {"itemId", item.itemId},
+                {"itemName", item.itemName},
+                {"quantity", item.quantity}
+                });
+        }
+    }
+    saveToFile("inventory.json", arr);
+}
+
+void loadInventoryFromFile() {
+    ensureFileExists("inventory.json");
+    json arr;
+    loadFromFile("inventory.json", arr);
+
+    {
+        std::lock_guard<std::mutex> lock(inventoryMutex);
+        inventoryItems.clear();
+        for (auto& jitem : arr) {
+            if (!jitem.contains("itemId") || !jitem.contains("itemName") ||
+                !jitem.contains("quantity")) {
+                continue;
+            }
+            InventoryItem item;
+            item.itemId = jitem["itemId"].get<int>();
+            item.itemName = jitem["itemName"].get<std::string>();
+            item.quantity = jitem["quantity"].get<int>();
+            inventoryItems.push_back(item);
+        }
+    }
+}
+
 // ------------------ Utility Functions ------------------
 bool isValidAppointmentTime(const std::string& time) {
     std::regex timeRegex(R"(^([0-1][0-9]|2[0-3]):([0-5][0-9])$)");
@@ -366,7 +451,17 @@ bool isAppointmentSlotTaken(int doctorId, const std::string& date, const std::st
     return false;
 }
 
+// Check and notify if stock is below a threshold (e.g. < 100)
+void checkAndNotifyLowStock(const InventoryItem& item) {
+    if (item.quantity < 100) {
+        // This is just a log example. In real use case, connect to email or other notifications
+        CROW_LOG_INFO << "[Warning] Item '" << item.itemName
+            << "' is low in stock! Current quantity: " << item.quantity
+            << ". Please restock soon!";
+    }
+}
 
+// ------------------ Main ------------------
 int main() {
     crow::SimpleApp app;
 
@@ -377,295 +472,315 @@ int main() {
     loadMedicalRecordsFromFile();
     loadPrescriptionsFromFile();
     loadBillsFromFile();
+    loadInventoryFromFile();
 
     // Home route
     CROW_ROUTE(app, "/")([]() {
         return "Welcome to the Healthcare System (English version, all GET methods).";
         });
 
+    // -------------------------------------------------------------------------
+    // Register new patient (GET)
+    // Example: /register?name=John&address=NY&medicalHistory=History&insuranceCompany=XYZ
+    CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::GET)(
+        [](const crow::request& req) {
+            auto qs = req.url_params;
+            const char* name = qs.get("name");
+            const char* address = qs.get("address");
+            const char* medicalHistory = qs.get("medicalHistory");
+            const char* insuranceCompany = qs.get("insuranceCompany"); // optional
 
-    //  Register new patient
-    // Example: /register?name=John&address=NY&medicalHistory=SomeHistory&insuranceCompany=XYZ
-    CROW_ROUTE(app, "/register").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* name = qs.get("name");
-        const char* address = qs.get("address");
-        const char* medicalHistory = qs.get("medicalHistory");
-        const char* insuranceCompany = qs.get("insuranceCompany"); // optional
-
-        if (!name || !address || !medicalHistory) {
-            return crow::response(400, "Missing required parameters: name, address, medicalHistory");
-        }
-
-        bool hasInsurance = false;
-        std::string insCompany = "";
-        if (insuranceCompany != nullptr && std::string(insuranceCompany).size() > 0) {
-            hasInsurance = true;
-            insCompany = insuranceCompany;
-        }
-
-        // Create and store new patient
-        Patient newPatient;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            newPatient.id = (int)patients.size() + 1;
-        }
-        newPatient.name = name;
-        newPatient.address = address;
-        newPatient.medicalHistory = medicalHistory;
-        newPatient.hasInsurance = hasInsurance;
-        newPatient.insuranceCompany = insCompany;
-
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            patients.push_back(newPatient);
-        }
-        savePatientsToFile();
-
-        crow::json::wvalue resp;
-        resp["message"] = "Patient registered successfully";
-        resp["patientId"] = newPatient.id;
-        resp["hasInsurance"] = newPatient.hasInsurance;
-        resp["insuranceCompany"] = newPatient.insuranceCompany;
-        return crow::response(resp);
-        });
-
-    // Book appointment 
-    // Example:
-    // /book_appointment?patientId=1&doctorId=1&date=2025-01-02&time=09:00
-    // After booking, automatically add a Bill (with 0 fees) create or update a medicalRecord for the patient's appointment history
-    CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* patientIdStr = qs.get("patientId");
-        const char* doctorIdStr = qs.get("doctorId");
-        const char* date = qs.get("date");
-        const char* time = qs.get("time");
-
-        if (!patientIdStr || !doctorIdStr || !date || !time) {
-            return crow::response(400, "Missing required parameters: patientId, doctorId, date, time");
-        }
-
-        int patientId = std::atoi(patientIdStr);
-        int doctorId = std::atoi(doctorIdStr);
-
-        // Validate patient
-        auto patientIt = std::find_if(patients.begin(), patients.end(), [&](const Patient& p) {
-            return p.id == patientId;
-            });
-        if (patientIt == patients.end()) {
-            return crow::response(404, "Patient not found");
-        }
-
-        // Validate doctor
-        auto doctorIt = std::find_if(doctors.begin(), doctors.end(), [&](const Doctor& d) {
-            return d.id == doctorId;
-            });
-        if (doctorIt == doctors.end()) {
-            return crow::response(404, "Doctor not found");
-        }
-
-        // Validate date/time
-        std::string dateStr(date);
-        std::string timeStr(time);
-        if (!isValidDate(dateStr)) {
-            return crow::response(400, "Invalid date format (YYYY-MM-DD)");
-        }
-        if (!isValidAppointmentTime(timeStr)) {
-            return crow::response(400, "Invalid time (09:00 ~ 17:00, 10-min increments)");
-        }
-
-        // Check if slot taken
-        if (isAppointmentSlotTaken(doctorId, dateStr, timeStr)) {
-            return crow::response(400, "This slot is already taken for this doctor");
-        }
-
-        // Create appointment
-        Appointment newAppt = { patientId, doctorId, dateStr, timeStr };
-        int appointmentIndex = 0;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            appointments.push_back(newAppt);
-            appointmentIndex = (int)appointments.size(); // index
-        }
-        saveAppointmentsToFile();
-
-        // Create a Bill with 0 fees
-        Bill newBill;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            newBill.billId = (int)bills.size() + 1;
-            newBill.patientId = patientId;
-            newBill.appointmentId = appointmentIndex;
-            newBill.medicationFee = 0.0;
-            newBill.consultationFee = 0.0;
-            newBill.surgeryFee = 0.0;
-            newBill.totalFee = 0.0;
-            newBill.isInsured = patientIt->hasInsurance;
-            newBill.claimed = false;
-            newBill.insuranceCompany = patientIt->insuranceCompany;
-            newBill.claimStatus = "Not Submitted";
-            bills.push_back(newBill);
-        }
-        saveBillsToFile();
-
-
-        crow::json::wvalue resp;
-        resp["message"] = "Appointment booked successfully";
-        resp["appointment"] = {
-            {"patientId", patientId},
-            {"doctorId",  doctorId},
-            {"date", dateStr},
-            {"time", timeStr}
-        };
-        resp["bill"] = {
-            {"billId", newBill.billId},
-            {"isInsured", newBill.isInsured},
-            {"insuranceCompany", newBill.insuranceCompany},
-            {"status", newBill.claimStatus}
-        };
-        return crow::response(resp);
-        });
-
-
-
-
-    CROW_ROUTE(app, "/patients/<int>").methods(crow::HTTPMethod::GET)([](int id) {
-        crow::json::wvalue resp;
-        auto patientIt = std::find_if(patients.begin(), patients.end(), [&](const Patient& p) {
-            return p.id == id;
-            });
-
-        if (patientIt == patients.end()) {
-            return crow::response(404, "Patient not found");
-        }
-
-        crow::json::wvalue p;
-        p["id"] = patientIt->id;
-        p["name"] = patientIt->name;
-        p["address"] = patientIt->address;
-        p["medicalHistory"] = patientIt->medicalHistory;
-        p["hasInsurance"] = patientIt->hasInsurance;
-        p["insuranceCompany"] = patientIt->insuranceCompany;
-
-        // Add this patient's prescriptions
-        std::vector<crow::json::wvalue> prescArr;
-        for (auto& pr : prescriptions) {
-            if (pr.patientId == id) {
-                crow::json::wvalue item;
-                item["prescriptionId"] = pr.prescriptionId;
-                item["medication"] = pr.medication;
-                item["dosage"] = pr.dosage;
-                item["instructions"] = pr.instructions;
-                item["datePrescribed"] = pr.datePrescribed;
-                prescArr.push_back(std::move(item));
+            if (!name || !address || !medicalHistory) {
+                return crow::response(400, "Missing required parameters: name, address, medicalHistory");
             }
-        }
-        p["prescriptions"] = std::move(prescArr);
 
-        resp["patient"] = std::move(p);
-        return crow::response(resp);
+            bool hasInsurance = false;
+            std::string insCompany;
+            if (insuranceCompany != nullptr && std::string(insuranceCompany).size() > 0) {
+                hasInsurance = true;
+                insCompany = insuranceCompany;
+            }
+
+            Patient newPatient;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                newPatient.id = (int)patients.size() + 1;
+            }
+            newPatient.name = name;
+            newPatient.address = address;
+            newPatient.medicalHistory = medicalHistory;
+            newPatient.hasInsurance = hasInsurance;
+            newPatient.insuranceCompany = insCompany;
+
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                patients.push_back(newPatient);
+            }
+            savePatientsToFile();
+
+            crow::json::wvalue resp;
+            resp["message"] = "Patient registered successfully";
+            resp["patientId"] = newPatient.id;
+            resp["hasInsurance"] = newPatient.hasInsurance;
+            resp["insuranceCompany"] = newPatient.insuranceCompany;
+            return crow::response(resp);
         });
-    //  view all patients 
-    // Show each patient's prescriptions in the response
 
-    CROW_ROUTE(app, "/patients").methods(crow::HTTPMethod::GET)([]() {
-        crow::json::wvalue resp;
-        std::vector<crow::json::wvalue> arr;
-        for (auto& pat : patients) {
+    // -------------------------------------------------------------------------
+    // Book appointment (GET)
+    // Example: /book_appointment?patientId=1&doctorId=1&date=2025-01-02&time=09:00
+    CROW_ROUTE(app, "/book_appointment").methods(crow::HTTPMethod::GET)(
+        [](const crow::request& req) {
+            auto qs = req.url_params;
+            const char* patientIdStr = qs.get("patientId");
+            const char* doctorIdStr = qs.get("doctorId");
+            const char* date = qs.get("date");
+            const char* time = qs.get("time");
+
+            if (!patientIdStr || !doctorIdStr || !date || !time) {
+                return crow::response(400, "Missing required parameters: patientId, doctorId, date, time");
+            }
+
+            int patientId = std::atoi(patientIdStr);
+            int doctorId = std::atoi(doctorIdStr);
+
+            // Validate patient
+            auto patientIt = std::find_if(patients.begin(), patients.end(), [&](const Patient& p) {
+                return p.id == patientId;
+                });
+            if (patientIt == patients.end()) {
+                return crow::response(404, "Patient not found");
+            }
+
+            // Validate doctor
+            auto doctorIt = std::find_if(doctors.begin(), doctors.end(), [&](const Doctor& d) {
+                return d.id == doctorId;
+                });
+            if (doctorIt == doctors.end()) {
+                return crow::response(404, "Doctor not found");
+            }
+
+            // Validate date/time
+            std::string dateStr(date);
+            std::string timeStr(time);
+            if (!isValidDate(dateStr)) {
+                return crow::response(400, "Invalid date format (YYYY-MM-DD)");
+            }
+            if (!isValidAppointmentTime(timeStr)) {
+                return crow::response(400, "Invalid time (09:00 ~ 17:00, 10-min increments)");
+            }
+
+            // Check if slot is taken
+            if (isAppointmentSlotTaken(doctorId, dateStr, timeStr)) {
+                return crow::response(400, "This slot is already taken for this doctor");
+            }
+
+            // Create appointment
+            Appointment newAppt = { patientId, doctorId, dateStr, timeStr };
+            int appointmentIndex = 0;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                appointments.push_back(newAppt);
+                appointmentIndex = (int)appointments.size(); // indexing
+            }
+            saveAppointmentsToFile();
+
+            // Create a Bill with 0 fees
+            Bill newBill;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                newBill.billId = (int)bills.size() + 1;
+                newBill.patientId = patientId;
+                newBill.appointmentId = appointmentIndex;
+                newBill.medicationFee = 0.0;
+                newBill.consultationFee = 0.0;
+                newBill.surgeryFee = 0.0;
+                newBill.totalFee = 0.0;
+                newBill.isInsured = patientIt->hasInsurance;
+                newBill.claimed = false;
+                newBill.insuranceCompany = patientIt->insuranceCompany;
+                newBill.claimStatus = "Not Submitted";
+                bills.push_back(newBill);
+            }
+            saveBillsToFile();
+
+            crow::json::wvalue resp;
+            resp["message"] = "Appointment booked successfully";
+            resp["appointment"] = {
+                {"patientId", patientId},
+                {"doctorId",  doctorId},
+                {"date", dateStr},
+                {"time", timeStr}
+            };
+            resp["bill"] = {
+                {"billId", newBill.billId},
+                {"isInsured", newBill.isInsured},
+                {"insuranceCompany", newBill.insuranceCompany},
+                {"status", newBill.claimStatus}
+            };
+            return crow::response(resp);
+        });
+
+    // -------------------------------------------------------------------------
+    // View details of a single patient by ID (GET)
+    // example: /patients/1
+    CROW_ROUTE(app, "/patients/<int>").methods(crow::HTTPMethod::GET)(
+        [](int id) {
+            auto patientIt = std::find_if(patients.begin(), patients.end(), [&](const Patient& p) {
+                return p.id == id;
+                });
+
+            if (patientIt == patients.end()) {
+                return crow::response(404, "Patient not found");
+            }
+
             crow::json::wvalue p;
-            p["id"] = pat.id;
-            p["name"] = pat.name;
-            p["address"] = pat.address;
-            p["medicalHistory"] = pat.medicalHistory;
-            p["hasInsurance"] = pat.hasInsurance;
-            p["insuranceCompany"] = pat.insuranceCompany;
+            p["id"] = patientIt->id;
+            p["name"] = patientIt->name;
+            p["address"] = patientIt->address;
+            p["medicalHistory"] = patientIt->medicalHistory;
+            p["hasInsurance"] = patientIt->hasInsurance;
+            p["insuranceCompany"] = patientIt->insuranceCompany;
 
             // Add this patient's prescriptions
             std::vector<crow::json::wvalue> prescArr;
             for (auto& pr : prescriptions) {
-                if (pr.patientId == pat.id) {
+                if (pr.patientId == id) {
                     crow::json::wvalue item;
                     item["prescriptionId"] = pr.prescriptionId;
-                    item["medication"] = pr.medication;
-                    item["dosage"] = pr.dosage;
-                    item["instructions"] = pr.instructions;
+                    item["doctorId"] = pr.doctorId;
                     item["datePrescribed"] = pr.datePrescribed;
+                    item["instructions"] = pr.instructions;
+
+                    // Convert itemsUsed
+                    std::vector<crow::json::wvalue> itemsUsedJson;
+                    for (auto& used : pr.itemsUsed) {
+                        crow::json::wvalue u;
+                        u["itemName"] = used.itemName;
+                        u["usedAmount"] = used.usedAmount;
+                        itemsUsedJson.push_back(std::move(u));
+                    }
+                    item["itemsUsed"] = std::move(itemsUsedJson);
+
                     prescArr.push_back(std::move(item));
                 }
             }
             p["prescriptions"] = std::move(prescArr);
 
-            arr.push_back(std::move(p));
-        }
-        resp["patients"] = std::move(arr);
-        return crow::response(resp);
+            crow::json::wvalue resp;
+            resp["patient"] = std::move(p);
+            return crow::response(resp);
         });
 
+    // -------------------------------------------------------------------------
+    // View all patients (GET)
+    CROW_ROUTE(app, "/patients").methods(crow::HTTPMethod::GET)(
+        []() {
+            crow::json::wvalue resp;
+            std::vector<crow::json::wvalue> arr;
+            for (auto& pat : patients) {
+                crow::json::wvalue p;
+                p["id"] = pat.id;
+                p["name"] = pat.name;
+                p["address"] = pat.address;
+                p["medicalHistory"] = pat.medicalHistory;
+                p["hasInsurance"] = pat.hasInsurance;
+                p["insuranceCompany"] = pat.insuranceCompany;
 
-    // view  appointments  /appointments?patientId=<> to view one
+                // patient's prescriptions
+                std::vector<crow::json::wvalue> prescArr;
+                for (auto& pr : prescriptions) {
+                    if (pr.patientId == pat.id) {
+                        crow::json::wvalue item;
+                        item["prescriptionId"] = pr.prescriptionId;
+                        item["doctorId"] = pr.doctorId;
+                        item["datePrescribed"] = pr.datePrescribed;
+                        item["instructions"] = pr.instructions;
 
-    CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        crow::json::wvalue resp;
-        std::vector<crow::json::wvalue> arr;
+                        // itemsUsed
+                        std::vector<crow::json::wvalue> itemsUsedJson;
+                        for (auto& used : pr.itemsUsed) {
+                            crow::json::wvalue u;
+                            u["itemName"] = used.itemName;
+                            u["usedAmount"] = used.usedAmount;
+                            itemsUsedJson.push_back(std::move(u));
+                        }
+                        item["itemsUsed"] = std::move(itemsUsedJson);
 
-        // Parse the query string for patientId
-        auto query_params = crow::query_string(req.url_params);
-        auto patient_id_param = query_params.get("patientId");
+                        prescArr.push_back(std::move(item));
+                    }
+                }
+                p["prescriptions"] = std::move(prescArr);
 
-        for (auto& a : appointments) {
-            // Check if patientId matches if provided
-            if (patient_id_param && std::to_string(a.patientId) != patient_id_param) {
-                continue;
+                arr.push_back(std::move(p));
             }
-            crow::json::wvalue item;
-            item["patientId"] = a.patientId;
-            item["doctorId"] = a.doctorId;
-            item["date"] = a.date;
-            item["time"] = a.time;
-            arr.push_back(std::move(item));
-        }
-
-        resp["appointments"] = std::move(arr);
-        return crow::response(resp);
+            resp["patients"] = std::move(arr);
+            return crow::response(resp);
         });
 
+    // -------------------------------------------------------------------------
+    // View appointments (GET)
+    // optional param: ?patientId=<id> to filter
+    CROW_ROUTE(app, "/appointments").methods(crow::HTTPMethod::GET)(
+        [](const crow::request& req) {
+            auto patient_id_param = req.url_params.get("patientId");
+            crow::json::wvalue resp;
+            std::vector<crow::json::wvalue> arr;
 
+            for (auto& a : appointments) {
+                if (patient_id_param && std::to_string(a.patientId) != patient_id_param) {
+                    continue;
+                }
+                crow::json::wvalue item;
+                item["patientId"] = a.patientId;
+                item["doctorId"] = a.doctorId;
+                item["date"] = a.date;
+                item["time"] = a.time;
+                arr.push_back(std::move(item));
+            }
 
-    // Rregister a new doctor 
-    // Example:
-    // /register_doctor?name=DrSmith&specialty=Surgery&contactInfo=xxx
-    CROW_ROUTE(app, "/register_doctor").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* name = qs.get("name");
-        const char* specialty = qs.get("specialty");
-        const char* contactInfo = qs.get("contactInfo");
-
-        if (!name || !specialty || !contactInfo) {
-            return crow::response(400, "Missing required parameters: name, specialty, contactInfo");
-        }
-
-        Doctor d;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            d.id = (int)doctors.size() + 1;
-        }
-        d.name = name;
-        d.specialty = specialty;
-        d.contactInfo = contactInfo;
-
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            doctors.push_back(d);
-        }
-        saveDoctorsToFile();
-
-        crow::json::wvalue resp;
-        resp["message"] = "Doctor registered successfully";
-        resp["doctorId"] = d.id;
-        return crow::response(resp);
+            resp["appointments"] = std::move(arr);
+            return crow::response(resp);
         });
 
+    // -------------------------------------------------------------------------
+    // Register a new doctor (GET)
+    // Example: /register_doctor?name=DrSmith&specialty=Surgery&contactInfo=123456
+    CROW_ROUTE(app, "/register_doctor").methods(crow::HTTPMethod::GET)(
+        [](const crow::request& req) {
+            auto qs = req.url_params;
+            const char* name = qs.get("name");
+            const char* specialty = qs.get("specialty");
+            const char* contactInfo = qs.get("contactInfo");
 
+            if (!name || !specialty || !contactInfo) {
+                return crow::response(400, "Missing required parameters: name, specialty, contactInfo");
+            }
+
+            Doctor d;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                d.id = (int)doctors.size() + 1;
+            }
+            d.name = name;
+            d.specialty = specialty;
+            d.contactInfo = contactInfo;
+
+            {
+                std::lock_guard<std::mutex> lock(dataMutex);
+                doctors.push_back(d);
+            }
+            saveDoctorsToFile();
+
+            crow::json::wvalue resp;
+            resp["message"] = "Doctor registered successfully";
+            resp["doctorId"] = d.id;
+            return crow::response(resp);
+        });
+
+    // -------------------------------------------------------------------------
+    // Add medical record (GET)
+    // Example: /add_medical_record?patientId=1&doctorId=1&diagnosis=Flu&notes=Test
     CROW_ROUTE(app, "/add_medical_record").methods(crow::HTTPMethod::GET)(
         [](const crow::request& req) {
             auto qs = req.url_params;
@@ -697,15 +812,10 @@ int main() {
                 return crow::response(404, "Doctor not found");
             }
 
-            // Find the "most recent" appointment for this (patientId, doctorId).
-            // The logic here is up to you; for simplicity, we'll just pick 
-            // the last one in the appointments vector that matches.
-            // If you prefer the earliest or a specific date, adjust accordingly.
+            // Find the most recent appointment for (patientId, doctorId)
             std::string chosenDate;
             {
                 std::lock_guard<std::mutex> lock(dataMutex);
-
-                // We'll search from the end to find the last matching appointment
                 for (auto it = appointments.rbegin(); it != appointments.rend(); ++it) {
                     if (it->patientId == patientId && it->doctorId == doctorId) {
                         chosenDate = it->date;
@@ -714,11 +824,10 @@ int main() {
                 }
             }
             if (chosenDate.empty()) {
-                // No matching appointment found
                 return crow::response(400, "No appointment found for this patient/doctor combination");
             }
 
-            // Now create the MedicalRecord with that appointment date
+            // Create the MedicalRecord
             MedicalRecord newRecord;
             {
                 std::lock_guard<std::mutex> lock(dataMutex);
@@ -726,7 +835,7 @@ int main() {
             }
             newRecord.patientId = patientId;
             newRecord.doctorId = doctorId;
-            newRecord.visitDate = chosenDate;  // from the last found appointment
+            newRecord.visitDate = chosenDate;
             newRecord.notes = notes;
             newRecord.diagnosis = diagnosis;
 
@@ -736,7 +845,6 @@ int main() {
             }
             saveMedicalRecordsToFile();
 
-            // Respond with success
             crow::json::wvalue resp;
             resp["message"] = "Medical record added successfully";
             resp["recordId"] = newRecord.recordId;
@@ -744,232 +852,411 @@ int main() {
             resp["patientId"] = newRecord.patientId;
             resp["visitDate"] = newRecord.visitDate;
             return crow::response(resp);
-        }
-        );
-    // view doctors 
-
-    CROW_ROUTE(app, "/doctors").methods(crow::HTTPMethod::GET)([]() {
-        crow::json::wvalue resp;
-        std::vector<crow::json::wvalue> arr;
-        for (auto& d : doctors) {
-            crow::json::wvalue item;
-            item["id"] = d.id;
-            item["name"] = d.name;
-            item["specialty"] = d.specialty;
-            item["contactInfo"] = d.contactInfo;
-            arr.push_back(std::move(item));
-        }
-        resp["doctors"] = std::move(arr);
-        return crow::response(resp);
         });
 
-
-    // Add prescription 
-    // Example:
-    // /add_prescription?patientId=1&doctorId=1&medication=ABC&dosage=1tablet&instructions=AfterMeal&datePrescribed=2025-01-02
-    CROW_ROUTE(app, "/add_prescription").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* patientIdStr = qs.get("patientId");
-        const char* doctorIdStr = qs.get("doctorId");
-        const char* medication = qs.get("medication");
-        const char* dosage = qs.get("dosage");
-        const char* instructions = qs.get("instructions");
-        const char* datePrescribed = qs.get("datePrescribed");
-
-        if (!patientIdStr || !doctorIdStr || !medication || !dosage
-            || !instructions || !datePrescribed) {
-            return crow::response(400, "Missing required parameters");
-        }
-
-        int patientId = std::atoi(patientIdStr);
-        int doctorId = std::atoi(doctorIdStr);
-
-        // Validate patient
-        bool patientFound = false;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            for (auto& p : patients) {
-                if (p.id == patientId) {
-                    patientFound = true;
-                    break;
-                }
-            }
-        }
-        if (!patientFound) {
-            return crow::response(404, "Patient not found");
-        }
-
-        // Validate doctor
-        bool doctorFound = false;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
+    // -------------------------------------------------------------------------
+    // View all doctors (GET)
+    CROW_ROUTE(app, "/doctors").methods(crow::HTTPMethod::GET)(
+        []() {
+            crow::json::wvalue resp;
+            std::vector<crow::json::wvalue> arr;
             for (auto& d : doctors) {
-                if (d.id == doctorId) {
-                    doctorFound = true;
-                    break;
+                crow::json::wvalue item;
+                item["id"] = d.id;
+                item["name"] = d.name;
+                item["specialty"] = d.specialty;
+                item["contactInfo"] = d.contactInfo;
+                arr.push_back(std::move(item));
+            }
+            resp["doctors"] = std::move(arr);
+            return crow::response(resp);
+        });
+
+    // -------------------------------------------------------------------------
+    // Add Prescription (multiple items) (GET)
+    // Example:
+    // /add_prescription?patientId=1&doctorId=1&datePrescribed=2025-01-02&instructions=TakeAfterMeal&itemsUsed=Bandage,10;Syringe,5;MedicationX,2
+    CROW_ROUTE(app, "/add_prescription").methods(crow::HTTPMethod::GET)(
+        [](const crow::request& req) {
+            try {
+                auto qs = req.url_params;
+                const char* patientIdStr = qs.get("patientId");
+                const char* doctorIdStr = qs.get("doctorId");
+                const char* datePrescribed = qs.get("datePrescribed");
+                const char* instructions = qs.get("instructions");
+                const char* itemsUsedStr = qs.get("itemsUsed");
+
+                if (!patientIdStr || !doctorIdStr || !datePrescribed || !instructions || !itemsUsedStr) {
+                    return crow::response(400, "Missing required parameters: "
+                        "patientId, doctorId, datePrescribed, "
+                        "instructions, itemsUsed");
+                }
+
+                int patientId = std::atoi(patientIdStr);
+                int doctorId = std::atoi(doctorIdStr);
+                std::string dateStr(datePrescribed);
+
+                // Parse itemsUsed string
+                std::vector<PrescriptionItem> parsedItems;
+                {
+                    std::string raw(itemsUsedStr);
+                    std::stringstream ss(raw);
+                    std::string segment;
+                    while (std::getline(ss, segment, ';')) {
+                        if (segment.empty()) continue;
+                        auto commaPos = segment.find(',');
+                        if (commaPos == std::string::npos) {
+                            return crow::response(400, "Invalid format in itemsUsed");
+                        }
+                        std::string itemName = segment.substr(0, commaPos);
+                        std::string amountStr = segment.substr(commaPos + 1);
+
+                        if (itemName.empty() || amountStr.empty()) {
+                            return crow::response(400, "Invalid segment in itemsUsed");
+                        }
+                        int usedAmount = std::atoi(amountStr.c_str());
+                        if (usedAmount <= 0) {
+                            return crow::response(400, "Invalid usedAmount in itemsUsed");
+                        }
+                        parsedItems.push_back({ itemName, usedAmount });
+                    }
+                    if (parsedItems.empty()) {
+                        return crow::response(400, "No valid items parsed from itemsUsed");
+                    }
+                }
+
+                // Lock both dataMutex and inventoryMutex for atomic operations
+                {
+                    std::scoped_lock<std::mutex, std::mutex> lock(dataMutex, inventoryMutex);
+
+                    // Validate patient and doctor
+                    auto pIt = std::find_if(patients.begin(), patients.end(), [&](const Patient& p) {
+                        return p.id == patientId;
+                        });
+                    if (pIt == patients.end()) {
+                        return crow::response(404, "Patient not found");
+                    }
+
+                    auto dIt = std::find_if(doctors.begin(), doctors.end(), [&](const Doctor& d) {
+                        return d.id == doctorId;
+                        });
+                    if (dIt == doctors.end()) {
+                        return crow::response(404, "Doctor not found");
+                    }
+
+                    // Validate date format
+                    if (!isValidDate(dateStr)) {
+                        return crow::response(400, "Invalid date format (YYYY-MM-DD)");
+                    }
+
+                    // Check and deduct inventory
+                    for (auto& pi : parsedItems) {
+                        auto invIt = std::find_if(inventoryItems.begin(), inventoryItems.end(),
+                            [&](const InventoryItem& inv) {
+                                return inv.itemName == pi.itemName;
+                            });
+                        if (invIt == inventoryItems.end()) {
+                            return crow::response(400, "Item " + pi.itemName + " not found in inventory");
+                        }
+                        if (invIt->quantity < pi.usedAmount) {
+                            return crow::response(400, "Insufficient inventory for item " + pi.itemName);
+                        }
+                        // Deduct inventory
+                        invIt->quantity -= pi.usedAmount;
+                        if (invIt->quantity < 0) {
+                            invIt->quantity = 0; // safety net
+                        }
+                        checkAndNotifyLowStock(*invIt);
+                    }
+
+                    // 2.3 Create and save prescription
+                    Prescription newPres;
+                    newPres.prescriptionId = static_cast<int>(prescriptions.size()) + 1;
+                    newPres.patientId = patientId;
+                    newPres.doctorId = doctorId;
+                    newPres.datePrescribed = dateStr;
+                    newPres.instructions = instructions;
+                    newPres.itemsUsed = parsedItems;
+                    prescriptions.push_back(newPres);
+
+
+                    {
+                        // Save prescriptions to file
+                        json pArr = json::array();
+                        for (auto& pr : prescriptions) {
+                            json itemsArr = json::array();
+                            for (auto& used : pr.itemsUsed) {
+                                itemsArr.push_back({
+                                    {"itemName", used.itemName},
+                                    {"usedAmount", used.usedAmount}
+                                    });
+                            }
+                            pArr.push_back({
+                                {"prescriptionId", pr.prescriptionId},
+                                {"patientId", pr.patientId},
+                                {"doctorId", pr.doctorId},
+                                {"datePrescribed", pr.datePrescribed},
+                                {"instructions", pr.instructions},
+                                {"itemsUsed", itemsArr}
+                                });
+                        }
+                        saveToFile("prescriptions.json", pArr);
+
+                        json invArr = json::array();
+                        for (auto& invItem : inventoryItems) {
+                            invArr.push_back({
+                                {"itemId", invItem.itemId},
+                                {"itemName", invItem.itemName},
+                                {"quantity", invItem.quantity}
+                                });
+                        }
+                        saveToFile("inventory.json", invArr);
+                    }
+                } // release dataMutex  inventoryMutex
+
+                // http respond
+                crow::json::wvalue resp;
+                resp["message"] = "Prescription added successfully";
+               
+                resp["prescriptionId"] = static_cast<int>(prescriptions.size()); // 或 newPres.prescriptionId
+
+                std::vector<crow::json::wvalue> usedArr;
+                for (auto& x : parsedItems) {
+                    crow::json::wvalue tmp;
+                    tmp["itemName"] = x.itemName;
+                    tmp["usedAmount"] = x.usedAmount;
+                    usedArr.push_back(std::move(tmp));
+                }
+                resp["itemsUsed"] = std::move(usedArr);
+
+                return crow::response(resp);
+
+            }
+            catch (const std::exception& e) {
+                CROW_LOG_ERROR << "[add_prescription] Exception: " << e.what();
+                return crow::response(500, std::string("Internal Server Error: ") + e.what());
+            }
+            catch (...) {
+                CROW_LOG_ERROR << "[add_prescription] Unknown exception occurred.";
+                return crow::response(500, "Unknown exception in add_prescription");
+            }
+        });
+
+    // -------------------------------------------------------------------------
+    // View all bills (GET)
+    CROW_ROUTE(app, "/bills").methods(crow::HTTPMethod::GET)(
+        []() {
+            crow::json::wvalue resp;
+            std::vector<crow::json::wvalue> arr;
+            for (auto& b : bills) {
+                crow::json::wvalue item;
+                item["billId"] = b.billId;
+                item["patientId"] = b.patientId;
+                item["appointmentId"] = b.appointmentId;
+                item["medicationFee"] = b.medicationFee;
+                item["consultationFee"] = b.consultationFee;
+                item["surgeryFee"] = b.surgeryFee;
+                item["totalFee"] = b.totalFee;
+                item["isInsured"] = b.isInsured;
+                item["claimed"] = b.claimed;
+                item["insuranceCompany"] = b.insuranceCompany;
+                item["claimStatus"] = b.claimStatus;
+                arr.push_back(std::move(item));
+            }
+            resp["bills"] = std::move(arr);
+            return crow::response(resp);
+        });
+
+    // -------------------------------------------------------------------------
+    // Update a bill (GET)
+    // Example: /update_bill?billId=1&medicationFee=10.0&consultationFee=20.0&surgeryFee=0.0
+    CROW_ROUTE(app, "/update_bill").methods(crow::HTTPMethod::GET)(
+        [](const crow::request& req) {
+            auto qs = req.url_params;
+            const char* billIdStr = qs.get("billId");
+            const char* medicationFeeStr = qs.get("medicationFee");
+            const char* consultationFeeStr = qs.get("consultationFee");
+            const char* surgeryFeeStr = qs.get("surgeryFee");
+
+            if (!billIdStr) {
+                return crow::response(400, "Missing required parameter: billId");
+            }
+            int billId = std::atoi(billIdStr);
+
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = std::find_if(bills.begin(), bills.end(), [&](const Bill& b) {
+                return b.billId == billId;
+                });
+            if (it == bills.end()) {
+                return crow::response(404, "Bill not found");
+            }
+
+            if (medicationFeeStr) {
+                it->medicationFee = std::atof(medicationFeeStr);
+            }
+            if (consultationFeeStr) {
+                it->consultationFee = std::atof(consultationFeeStr);
+            }
+            if (surgeryFeeStr) {
+                it->surgeryFee = std::atof(surgeryFeeStr);
+            }
+
+            it->totalFee = it->medicationFee + it->consultationFee + it->surgeryFee;
+            saveBillsToFile();
+
+            crow::json::wvalue resp;
+            resp["message"] = "Bill updated successfully";
+            resp["billId"] = it->billId;
+            resp["totalFee"] = it->totalFee;
+            return crow::response(resp);
+        });
+
+    // -------------------------------------------------------------------------
+    // View medical records for a patient
+    // Example: /medical_record/1
+    CROW_ROUTE(app, "/medical_record/<int>").methods(crow::HTTPMethod::GET)(
+        [](int patientId) {
+            crow::json::wvalue response;
+            std::vector<crow::json::wvalue> recordList;
+
+            for (const auto& record : medicalRecords) {
+                if (record.patientId == patientId) {
+                    crow::json::wvalue recordInfo;
+                    recordInfo["recordId"] = record.recordId;
+                    recordInfo["patientId"] = record.patientId;
+                    recordInfo["doctorId"] = record.doctorId;
+                    recordInfo["visitDate"] = record.visitDate;
+                    recordInfo["notes"] = record.notes;
+                    recordInfo["diagnosis"] = record.diagnosis;
+                    recordList.push_back(std::move(recordInfo));
                 }
             }
-        }
-        if (!doctorFound) {
-            return crow::response(404, "Doctor not found");
-        }
 
-        if (!isValidDate(datePrescribed)) {
-            return crow::response(400, "Invalid date format for datePrescribed");
-        }
-
-        Prescription newPres;
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            newPres.prescriptionId = (int)prescriptions.size() + 1;
-        }
-        newPres.patientId = patientId;
-        newPres.doctorId = doctorId;
-        newPres.medication = medication;
-        newPres.dosage = dosage;
-        newPres.instructions = instructions;
-        newPres.datePrescribed = datePrescribed;
-
-        {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            prescriptions.push_back(newPres);
-        }
-        savePrescriptionsToFile();
-
-        crow::json::wvalue resp;
-        resp["message"] = "Prescription added successfully";
-        resp["prescriptionId"] = newPres.prescriptionId;
-        return crow::response(resp);
-        });
-
-
-    //  View /bills (GET)
-
-    CROW_ROUTE(app, "/bills").methods(crow::HTTPMethod::GET)([]() {
-        crow::json::wvalue resp;
-        std::vector<crow::json::wvalue> arr;
-        for (auto& b : bills) {
-            crow::json::wvalue item;
-            item["billId"] = b.billId;
-            item["patientId"] = b.patientId;
-            item["appointmentId"] = b.appointmentId;
-            item["medicationFee"] = b.medicationFee;
-            item["consultationFee"] = b.consultationFee;
-            item["surgeryFee"] = b.surgeryFee;
-            item["totalFee"] = b.totalFee;
-            item["isInsured"] = b.isInsured;
-            item["claimed"] = b.claimed;
-            item["insuranceCompany"] = b.insuranceCompany;
-            item["claimStatus"] = b.claimStatus;
-            arr.push_back(std::move(item));
-        }
-        resp["bills"] = std::move(arr);
-        return crow::response(resp);
-        });
-
-    // Example:
-    // /update_bill?billId=1&medicationFee=10.0&consultationFee=20.0&surgeryFee=0.0
-    CROW_ROUTE(app, "/update_bill").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* billIdStr = qs.get("billId");
-        const char* medicationFeeStr = qs.get("medicationFee");
-        const char* consultationFeeStr = qs.get("consultationFee");
-        const char* surgeryFeeStr = qs.get("surgeryFee");
-
-        if (!billIdStr) {
-            return crow::response(400, "Missing required parameter: billId");
-        }
-        int billId = std::atoi(billIdStr);
-
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(bills.begin(), bills.end(), [&](const Bill& b) {
-            return b.billId == billId;
-            });
-        if (it == bills.end()) {
-            return crow::response(404, "Bill not found");
-        }
-
-        if (medicationFeeStr) {
-            it->medicationFee = std::atof(medicationFeeStr);
-        }
-        if (consultationFeeStr) {
-            it->consultationFee = std::atof(consultationFeeStr);
-        }
-        if (surgeryFeeStr) {
-            it->surgeryFee = std::atof(surgeryFeeStr);
-        }
-
-        it->totalFee = it->medicationFee + it->consultationFee + it->surgeryFee;
-        saveBillsToFile();
-
-        crow::json::wvalue resp;
-        resp["message"] = "Bill updated successfully";
-        resp["billId"] = it->billId;
-        resp["totalFee"] = it->totalFee;
-        return crow::response(resp);
-        });
-
-    //view medical_record of patientid 
-    CROW_ROUTE(app, "/medical_record/<int>").methods(crow::HTTPMethod::GET)([](int patientId) {
-        crow::json::wvalue response;
-        std::vector<crow::json::wvalue> recordList;
-
-        for (const auto& record : medicalRecords) {
-            if (record.patientId == patientId) {
-                crow::json::wvalue recordInfo;
-                recordInfo["recordId"] = record.recordId;
-                recordInfo["patientId"] = record.patientId;
-                recordInfo["doctorId"] = record.doctorId;  // Include doctorId
-                recordInfo["visitDate"] = record.visitDate;
-                recordInfo["notes"] = record.notes;
-                recordInfo["diagnosis"] = record.diagnosis;
-                recordList.push_back(std::move(recordInfo));
+            if (recordList.empty()) {
+                return crow::response(404, "No medical records found for this patient");
             }
-        }
 
-        if (recordList.empty()) {
-            return crow::response(404, "No medical records found for this patient");
-        }
-
-        response["medicalRecords"] = std::move(recordList);
-        return crow::response(response);
-        });
-    // Example:
-    // /submit_claim?billId=1
-    CROW_ROUTE(app, "/submit_claim").methods(crow::HTTPMethod::GET)([](const crow::request& req) {
-        auto qs = req.url_params;
-        const char* billIdStr = qs.get("billId");
-        if (!billIdStr) {
-            return crow::response(400, "Missing required parameter: billId");
-        }
-        int billId = std::atoi(billIdStr);
-
-        std::lock_guard<std::mutex> lock(dataMutex);
-        auto it = std::find_if(bills.begin(), bills.end(), [&](const Bill& b) {
-            return b.billId == billId;
-            });
-        if (it == bills.end()) {
-            return crow::response(404, "Bill not found");
-        }
-
-        if (!it->isInsured) {
-            return crow::response(400, "This bill is not for an insured patient");
-        }
-        if (it->claimed) {
-            return crow::response(400, "This bill has already been claimed");
-        }
-
-        it->claimed = true;
-        it->claimStatus = "Pending";
-        saveBillsToFile();
-
-        crow::json::wvalue resp;
-        resp["message"] = "Insurance claim submitted";
-        resp["billId"] = it->billId;
-        resp["claimStatus"] = it->claimStatus;
-        return crow::response(resp);
+            response["medicalRecords"] = std::move(recordList);
+            return crow::response(response);
         });
 
+    // -------------------------------------------------------------------------
+    // Submit insurance claim (GET)
+    // Example: /submit_claim?billId=1
+    CROW_ROUTE(app, "/submit_claim").methods(crow::HTTPMethod::GET)(
+        [](const crow::request& req) {
+            auto qs = req.url_params;
+            const char* billIdStr = qs.get("billId");
+            if (!billIdStr) {
+                return crow::response(400, "Missing required parameter: billId");
+            }
+            int billId = std::atoi(billIdStr);
+
+            std::lock_guard<std::mutex> lock(dataMutex);
+            auto it = std::find_if(bills.begin(), bills.end(), [&](const Bill& b) {
+                return b.billId == billId;
+                });
+            if (it == bills.end()) {
+                return crow::response(404, "Bill not found");
+            }
+
+            if (!it->isInsured) {
+                return crow::response(400, "This bill is not for an insured patient");
+            }
+            if (it->claimed) {
+                return crow::response(400, "This bill has already been claimed");
+            }
+
+            it->claimed = true;
+            it->claimStatus = "Pending";
+            saveBillsToFile();
+
+            crow::json::wvalue resp;
+            resp["message"] = "Insurance claim submitted";
+            resp["billId"] = it->billId;
+            resp["claimStatus"] = it->claimStatus;
+            return crow::response(resp);
+        });
+
+    // ------------------- Inventory Management -------------------
+    // View the entire inventory (GET)
+    // Example: /inventory
+    CROW_ROUTE(app, "/inventory").methods(crow::HTTPMethod::GET)(
+        []() {
+            crow::json::wvalue resp;
+            std::vector<crow::json::wvalue> arr;
+
+            {
+                std::lock_guard<std::mutex> lock(inventoryMutex);
+                for (auto& item : inventoryItems) {
+                    crow::json::wvalue temp;
+                    temp["itemId"] = item.itemId;
+                    temp["itemName"] = item.itemName;
+                    temp["quantity"] = item.quantity;
+                    arr.push_back(std::move(temp));
+                }
+            }
+
+            resp["inventory"] = std::move(arr);
+            return crow::response(resp);
+        });
+
+    // -------------------------------------------------------------------------
+    // Manually update or create an inventory item (GET)
+    // Example: /update_inventory_item?itemName=Bandage&quantity=500
+    CROW_ROUTE(app, "/update_inventory_item").methods(crow::HTTPMethod::GET)(
+        [](const crow::request& req) {
+            auto qs = req.url_params;
+            const char* itemName = qs.get("itemName");
+            const char* quantityStr = qs.get("quantity");
+
+            if (!itemName || !quantityStr) {
+                return crow::response(400, "Missing 'itemName' or 'quantity'");
+            }
+
+            int newQuantity = std::atoi(quantityStr);
+            if (newQuantity < 0) {
+                return crow::response(400, "Quantity cannot be negative");
+            }
+
+            bool isUpdated = false;
+
+            {
+                std::lock_guard<std::mutex> lock(inventoryMutex);
+                // judge if the item exists
+                auto it = std::find_if(inventoryItems.begin(), inventoryItems.end(),
+                    [&](const InventoryItem& i) {
+                        return i.itemName == itemName;
+                    });
+
+                if (it == inventoryItems.end()) {
+                    // add item
+                    InventoryItem newItem;
+                    newItem.itemId = static_cast<int>(inventoryItems.size()) + 1;
+                    newItem.itemName = itemName;
+                    newItem.quantity = newQuantity;
+                    inventoryItems.push_back(newItem);
+
+   
+                    checkAndNotifyLowStock(newItem);
+                }
+                else {
+                    it->quantity = newQuantity;
+                    checkAndNotifyLowStock(*it);
+                }
+                isUpdated = true;
+            } 
+
+            if (isUpdated) {
+                saveInventoryToFile();
+            }
+
+            crow::json::wvalue resp;
+            resp["message"] = "Inventory updated successfully";
+            resp["itemName"] = itemName;
+            resp["quantity"] = newQuantity;
+            return crow::response(resp);
+        });
     // Start server on port 8080
     app.port(8080).multithreaded().run();
     return 0;
